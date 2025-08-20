@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AIH Controller Dashboard</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <style>
+        /* Custom Modal Styles for delete confirmation */
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            overflow: auto;
+            background-color: rgba(0,0,0,0.4);
+            padding-top: 60px;
+        }
+        .modal-content {
+            background-color: #fefefe;
+            margin: 5% auto;
+            padding: 20px;
+            border: 1px solid #888;
+            width: 80%;
+            max-width: 500px;
+            border-radius: 8px;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+            position: relative;
+            text-align: center;
+        }
+        .close-button {
+            color: #aaa;
+            float: right;
+            font-size: 28px;
+            font-weight: bold;
+            position: absolute;
+            top: 10px;
+            right: 15px;
+            cursor: pointer;
+        }
+        .modal-buttons {
+            margin-top: 20px;
+        }
+        .modal-buttons button {
+            padding: 10px 20px;
+            margin: 0 10px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        .modal-buttons .confirm-yes {
+            background-color: #dc3545;
+            color: white;
+        }
+        .modal-buttons .confirm-no {
+            background-color: #6c757d;
+            color: white;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h2>AIH Controller Dashboard</h2>
+            <p>Welcome, {{ controller_name }} ({{ username }})!</p>
+            <a href="{{ url_for('logout') }}" class="button logout-button">Logout</a>
+        </div>
+        
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                <ul class="flashes">
+                    {% for category, message in messages %}
+                        <li class="{{ category }}">{{ message }}</li>
+                    {% endfor %}
+                </ul>
+            {% endif %}
+        {% endwith %}
+
+        <div id="status-message" class="status-message" style="display: none;"></div>
+
+        <div class="dashboard-content">
+            <div class="section-card">
+                <h3>Attendance Session Control (BA - AIH)</h3>
+                {% if active_session %}
+                    <p><strong>Active Session (ID: {{ active_session.id }})</strong></p>
+                    <p>Time Remaining: <span id="timer-{{ active_session.id }}" style="font-weight: bold;">{{ active_session.remaining_time }}s</span></p>
+                    <button type="button" class="button end-session-btn" data-session-id="{{ active_session.id }}" style="background-color: #dc3545;">End Session Now</button>
+                    <a href="{{ url_for('edit_attendance', session_id=active_session.id) }}" class="button">Edit Live Attendance</a>
+                {% else %}
+                    <p>No active session for BA - AIH.</p>
+                    <form action="{{ url_for('start_session') }}" method="post">
+                        <input type="hidden" name="class_id" value="{{ ba_aih_class_id }}">
+                        <button type="submit" class="button">Start New 5-Minute Session</button>
+                    </form>
+                {% endif %}
+            </div>
+
+            <div class="section-card">
+                <h3>Attendance Reports & Management</h3>
+                <p>View comprehensive attendance records and manage daily data.</p>
+                <a href="{{ url_for('attendance_report') }}" class="button">View Daily Report</a>
+            </div>
+
+            <h3 style="margin-top: 30px;">Past Sessions</h3>
+            {% if all_sessions %}
+            <div style="overflow-x: auto;">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Session ID</th>
+                            <th>Start Time (UTC)</th>
+                            <th>End Time (UTC)</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for session in all_sessions %}
+                        <tr>
+                            <td>{{ session.id }}</td>
+                            <td>{{ session.start_time }}</td>
+                            <td>{{ session.end_time }}</td>
+                            <td>
+                                <a href="{{ url_for('edit_attendance', session_id=session.id) }}" class="button" style="padding: 5px 10px; font-size: 0.9em;">Edit</a>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% else %}
+            <div class="info-message">
+                No past sessions found.
+            </div>
+            {% endif %}
+
+            <!-- Confirmation Modal for Deletion -->
+            <div id="confirmation-modal" class="modal">
+                <div class="modal-content">
+                    <span class="close-button">&times;</span>
+                    <p id="confirm-message"></p>
+                    <div class="modal-buttons">
+                        <button id="confirm-yes" class="confirm-yes">Yes, Delete</button>
+                        <button id="confirm-no" class="confirm-no">No, Cancel</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <script>
+        // Pass active session data to JavaScript
+        window.activeSessionData = {{ active_session | tojson | default('{}', true) }};
+    </script>
+    <script src="{{ url_for('static', filename='main.js') }}"></script>
+</body>
+</html>

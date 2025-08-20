@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mark AIH Attendance (by Ritik)</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <style>
+        .session-info { background-color: #e9ecef; padding: 15px; border-radius: 8px; margin-bottom: 20px; text-align: center; }
+        .session-info p { margin: 5px 0; font-size: 1.1em; }
+        .session-info strong { color: #0056b3; }
+        .form-group input[type="text"] { text-transform: uppercase; }
+        .student-name-display { margin-top: 10px; font-weight: bold; color: #007bff; min-height: 20px; }
+        .button:disabled { background-color: #cccccc; cursor: not-allowed; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h2>Mark AIH Attendance (by Ritik)</h2>
+            <p>Enter your enrollment number for the active BA - AIH session.</p>
+        </div>
+
+        <div id="status-message" class="status-message" style="display: none;"></div>
+
+        <div class="dashboard-content">
+            {% if active_session %}
+                <div class="session-info">
+                    <p>Active Session for: <strong>{{ active_session.class_name }}</strong></p>
+                    <p>Time Remaining: <span id="timer-student" style="font-weight: bold;"></span></p>
+                </div>
+
+                <form id="attendance-form" class="attendance-form">
+                    <div class="form-group">
+                        <label for="enrollment_no">Enrollment Number:</label>
+                        <input type="text" id="enrollment_no" name="enrollment_no" required placeholder="e.g., Y24120001" autocomplete="off">
+                        <div id="student-name-display"></div>
+                    </div>
+                    <button type="submit" id="mark-btn" class="button">Mark My Attendance</button>
+                </form>
+
+            {% else %}
+                <div class="info-message">
+                    There is no active attendance session for BA - AIH right now.
+                </div>
+            {% endif %}
+        </div>
+    </div>
+    <script>
+        // Pass session and geofence data from Flask to JavaScript
+        window.activeSessionDataStudent = {{ active_session | tojson | safe }};
+        window.geofenceData = {{ geofence_data | tojson | safe }};
+    </script>
+    <script src="{{ url_for('static', filename='main.js') }}"></script>
+</body>
+</html>
