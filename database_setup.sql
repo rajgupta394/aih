@@ -77,7 +77,7 @@ INSERT INTO users (username, role) VALUES ('controller', 'controller') ON CONFLI
 -- Insert the class data for BA - AIH 3rd Semester
 -- Coordinates for Sagar, Madhya Pradesh. Radius is in meters.
 INSERT INTO classes (class_name, controller_id, geofence_lat, geofence_lon, geofence_radius) VALUES
-('BA - AIH', (SELECT id FROM users WHERE username = 'controller'), 23.8388, 78.7378, 2250) -- RADIUS SET TO 50m
+('BA - AIH', (SELECT id FROM users WHERE username = 'controller'), 23.8244, 78.7706, 2250) -- RADIUS SET TO 50m
 ON CONFLICT (class_name) DO NOTHING;
 
 -- Insert all BA - AIH student data
