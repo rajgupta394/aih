@@ -86,6 +86,9 @@ function initStudentPage() {
                 }
 
                 // If inside radius, proceed with submission
+                // **FIX STARTS HERE**
+                let data = { success: false }; // Declare 'data' here with a default value
+
                 try {
                     const visitorId = getCanvasFingerprint();
                     
@@ -103,7 +106,7 @@ function initStudentPage() {
                         body: formData
                     });
 
-                    const data = await response.json();
+                    data = await response.json(); // Assign the response data here
                     showStatusMessage(data.message, data.category);
 
                     if (data.success) {
@@ -115,11 +118,13 @@ function initStudentPage() {
                     console.error('Error during submission process:', error);
                     showStatusMessage('An unexpected error occurred.', 'error');
                 } finally {
+                    // 'data' is now accessible here because it was declared outside the try block
                     if (!data.success) {
                         markAttendanceButton.disabled = false;
                         markAttendanceButton.textContent = "Mark My Attendance";
                     }
                 }
+                // **FIX ENDS HERE**
             },
             (geoError) => {
                 showStatusMessage('Geolocation error: ' + geoError.message, 'error');
