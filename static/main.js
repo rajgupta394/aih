@@ -19,7 +19,7 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 // ==============================================================================
-// === STUDENT PAGE LOGIC (with simplified fingerprinting) ===
+// === STUDENT PAGE LOGIC (with diagnostics) ===
 // ==============================================================================
 function initStudentPage() {
     const attendanceForm = document.getElementById('attendance-form');
@@ -28,6 +28,10 @@ function initStudentPage() {
     const studentNameDisplay = document.getElementById('student-name-display');
     const timerStudentSpan = document.getElementById('timer-student');
 
+    // New diagnostic elements
+    const diagnosticPanel = document.getElementById('diagnostic-panel');
+    const diagOutput = document.getElementById('diag-output');
+
     if (!window.activeSessionDataStudent || !window.activeSessionDataStudent.id) {
         console.log('No active session data found on student page.');
         return;
@@ -35,9 +39,6 @@ function initStudentPage() {
 
     startStudentTimer(window.activeSessionDataStudent.remaining_time, timerStudentSpan);
     
-    // Location check is now done on submit, so no on-load check is needed.
-    // The form is visible by default if a session is active.
-
     enrollmentNoInput.addEventListener('input', debounce(fetchStudentName, 300));
     attendanceForm.addEventListener('submit', handleAttendanceSubmit);
 
@@ -45,32 +46,51 @@ function initStudentPage() {
         e.preventDefault();
         markAttendanceButton.disabled = true;
         markAttendanceButton.textContent = "Processing...";
-        showStatusMessage('Getting location and verifying device...', 'info');
+        showStatusMessage('Getting your location...', 'info');
+
+        // Show the diagnostic panel for debugging
+        if (diagnosticPanel) diagnosticPanel.style.display = 'block';
 
         if (!navigator.geolocation) {
-            showStatusMessage('Geolocation is not supported. Cannot mark attendance.', 'error');
+            showStatusMessage('Geolocation is not supported by your browser.', 'error');
             markAttendanceButton.disabled = false;
-            markAttendanceButton.textContent = "Mark Attendance";
+            markAttendanceButton.textContent = "Mark My Attendance";
             return;
         }
 
         navigator.geolocation.getCurrentPosition(
             async (position) => {
-                const { latitude, longitude } = position.coords;
+                const { latitude, longitude, accuracy } = position.coords;
                 const distance = haversineDistance(latitude, longitude, window.geofenceData.geofence_lat, window.geofenceData.geofence_lon);
 
+                // Display diagnostic information
+                if (diagOutput) {
+                    diagOutput.innerHTML = `
+                        Target Lat: ${window.geofenceData.geofence_lat}<br>
+                        Target Lon: ${window.geofenceData.geofence_lon}<br>
+                        <hr>
+                        Your Lat: ${latitude.toFixed(6)}<br>
+                        Your Lon: ${longitude.toFixed(6)}<br>
+                        GPS Accuracy: ${accuracy.toFixed(0)} meters<br>
+                        <hr>
+                        Calculated Distance: <strong>${distance.toFixed(0)} meters</strong><br>
+                        Required Radius: <strong>${window.geofenceData.geofence_radius} meters</strong>
+                    `;
+                }
+
                 if (distance > window.geofenceData.geofence_radius) {
-                    showStatusMessage(`You are too far from class (${distance.toFixed(0)}m away). Please move closer.`, 'error');
+                    showStatusMessage(`You are ${distance.toFixed(0)}m away and outside the allowed radius.`, 'error');
                     markAttendanceButton.disabled = false;
-                    markAttendanceButton.textContent = "Mark Attendance";
+                    markAttendanceButton.textContent = "Mark My Attendance";
                     return;
                 }
 
+                // If inside radius, proceed with submission
                 try {
                     const visitorId = getCanvasFingerprint();
                     
                     const formData = new URLSearchParams({
-                        enrollment_no: enrollmentNoInput.value.trim(),
+                        enrollment_no: enrollmentNoInput.value.trim().toUpperCase(),
                         session_id: window.activeSessionDataStudent.id,
                         latitude: latitude,
                         longitude: longitude,
@@ -89,19 +109,23 @@ function initStudentPage() {
                     if (data.success) {
                         enrollmentNoInput.value = '';
                         studentNameDisplay.textContent = '';
+                        attendanceForm.style.display = 'none'; // Hide form on success
                     }
                 } catch (error) {
                     console.error('Error during submission process:', error);
                     showStatusMessage('An unexpected error occurred.', 'error');
                 } finally {
-                    markAttendanceButton.disabled = false;
-                    markAttendanceButton.textContent = "Mark Attendance";
+                    if (!data.success) {
+                        markAttendanceButton.disabled = false;
+                        markAttendanceButton.textContent = "Mark My Attendance";
+                    }
                 }
             },
             (geoError) => {
                 showStatusMessage('Geolocation error: ' + geoError.message, 'error');
+                if (diagOutput) diagOutput.textContent = `Geolocation Error: ${geoError.message}. Please ensure you have enabled location services for your browser.`;
                 markAttendanceButton.disabled = false;
-                markAttendanceButton.textContent = "Mark Attendance";
+                markAttendanceButton.textContent = "Mark My Attendance";
             },
             { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
         );
@@ -125,7 +149,7 @@ function initStudentPage() {
 }
 
 // ==============================================================================
-// === CONTROLLER, REPORT, & EDIT PAGE LOGIC (Your Original Code) ===
+// === CONTROLLER, REPORT, & EDIT PAGE LOGIC (Unchanged) ===
 // ==============================================================================
 function initControllerAndReportPage() {
     const confirmationModal = document.getElementById('confirmation-modal');
@@ -154,8 +178,9 @@ function initEditAttendancePage() {
     fetchStudentsForEdit(sessionId);
 }
 
+
 // ==============================================================================
-// === UTILITY FUNCTIONS ===
+// === UTILITY FUNCTIONS (Unchanged) ===
 // ==============================================================================
 function getCanvasFingerprint() {
     const canvas = document.createElement('canvas');

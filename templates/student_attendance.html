@@ -12,6 +12,18 @@
         .form-group input[type="text"] { text-transform: uppercase; }
         .student-name-display { margin-top: 10px; font-weight: bold; color: #007bff; min-height: 20px; }
         .button:disabled { background-color: #cccccc; cursor: not-allowed; }
+        /* New styles for the diagnostic panel */
+        #diagnostic-panel {
+            background-color: #fff3cd;
+            border: 1px solid #ffeeba;
+            color: #856404;
+            padding: 15px;
+            margin-top: 20px;
+            border-radius: 8px;
+            font-family: monospace;
+            line-height: 1.6;
+            display: none; /* Hidden by default */
+        }
     </style>
 </head>
 <body>
@@ -38,6 +50,12 @@
                     </div>
                     <button type="submit" id="mark-btn" class="button">Mark My Attendance</button>
                 </form>
+
+                <!-- New Diagnostic Panel -->
+                <div id="diagnostic-panel">
+                    <h4>Geolocation Debug Info:</h4>
+                    <div id="diag-output"></div>
+                </div>
 
             {% else %}
                 <div class="info-message">
