@@ -7,22 +7,38 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
     <style>
         .session-info { background-color: #e9ecef; padding: 15px; border-radius: 8px; margin-bottom: 20px; text-align: center; }
-        .session-info p { margin: 5px 0; font-size: 1.1em; }
-        .session-info strong { color: #0056b3; }
         .form-group input[type="text"] { text-transform: uppercase; }
-        .student-name-display { margin-top: 10px; font-weight: bold; color: #007bff; min-height: 20px; }
         .button:disabled { background-color: #cccccc; cursor: not-allowed; }
-        /* New styles for the diagnostic panel */
-        #diagnostic-panel {
-            background-color: #fff3cd;
-            border: 1px solid #ffeeba;
-            color: #856404;
-            padding: 15px;
-            margin-top: 20px;
+        /* Styles for the final attendance list */
+        .final-attendance-list {
+            background-color: #d4edda; /* Light green */
+            border: 1px solid #c3e6cb;
+            padding: 20px;
             border-radius: 8px;
-            font-family: monospace;
-            line-height: 1.6;
-            display: none; /* Hidden by default */
+            margin-top: 20px;
+        }
+        .final-attendance-list h3 {
+            color: #155724; /* Dark green */
+            margin-top: 0;
+            text-align: center;
+        }
+        .final-attendance-list ul {
+            list-style-type: none;
+            padding: 0;
+            column-count: 2; /* Display in two columns on wider screens */
+        }
+        .final-attendance-list li {
+            background-color: #ffffff;
+            padding: 8px;
+            margin-bottom: 5px;
+            border-radius: 4px;
+            font-size: 0.9em;
+        }
+        /* Make it a single column on mobile */
+        @media (max-width: 600px) {
+            .final-attendance-list ul {
+                column-count: 1;
+            }
         }
     </style>
 </head>
@@ -36,7 +52,9 @@
         <div id="status-message" class="status-message" style="display: none;"></div>
 
         <div class="dashboard-content">
+            
             {% if active_session %}
+                <!-- STATE 1: Session is currently active -->
                 <div class="session-info">
                     <p>Active Session for: <strong>{{ active_session.class_name }}</strong></p>
                     <p>Time Remaining: <span id="timer-student" style="font-weight: bold;"></span></p>
@@ -51,21 +69,29 @@
                     <button type="submit" id="mark-btn" class="button">Mark My Attendance</button>
                 </form>
 
-                <!-- New Diagnostic Panel -->
-                <div id="diagnostic-panel">
-                    <h4>Geolocation Debug Info:</h4>
-                    <div id="diag-output"></div>
+            {% elif present_students %}
+                <!-- STATE 2: No active session, show today's final list -->
+                <div class="final-attendance-list">
+                    <h3>Attendance for Today ({{ todays_date }})</h3>
+                    <p>The following students have been marked present today.</p>
+                    <ul>
+                        {% for student in present_students %}
+                            <li>{{ student.name }} ({{ student.enrollment_no }})</li>
+                        {% endfor %}
+                    </ul>
                 </div>
 
             {% else %}
+                <!-- STATE 3: No active session and no attendance recorded for today yet -->
                 <div class="info-message">
                     There is no active attendance session for BA - AIH right now.
                 </div>
             {% endif %}
+            
         </div>
     </div>
     <script>
-        // Pass session and geofence data from Flask to JavaScript
+        // Pass session data from Flask to JavaScript
         window.activeSessionDataStudent = {{ active_session | tojson | safe }};
         window.geofenceData = {{ geofence_data | tojson | safe }};
     </script>
