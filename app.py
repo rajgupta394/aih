@@ -221,7 +221,6 @@ def mark_attendance():
                 class_info = cur.fetchone()
                 if class_info: geofence_data = dict(class_info)
 
-                # If no active session, show all students present today.
                 if not active_session:
                     class_id = get_class_id_by_name('BA - AIH')
                     if class_id:
@@ -236,12 +235,13 @@ def mark_attendance():
 
                         if todays_sessions:
                             session_ids = [s['id'] for s in todays_sessions]
+                            # **MODIFIED LINE HERE**
                             cur.execute("""
                                 SELECT DISTINCT s.enrollment_no, s.name
                                 FROM attendance_records ar
                                 JOIN students s ON ar.student_id = s.id
                                 WHERE ar.session_id = ANY(%s)
-                                ORDER BY s.name ASC
+                                ORDER BY s.enrollment_no ASC
                             """, (session_ids,))
                             present_students = cur.fetchall()
         except Exception as e:
