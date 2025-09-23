@@ -15,7 +15,7 @@ app.secret_key = os.environ.get('SECRET_KEY', 'a_strong_default_secret_key_for_d
 
 # --- Application Configuration for AIH Department ---
 CLASS_NAME = 'B.A. - AIH'
-BATCH_CODE = 'BA' # Using the same student list as per database_setup.sql
+BATCH_CODE = 'BA' 
 GEOFENCE_RADIUS = 50  # Radius in meters
 
 # --- Controller Credentials (Use environment variables for production) ---
@@ -48,7 +48,7 @@ def controller_required(f):
         return f(*args, **kwargs)
     return decorated_function
 
-# --- Helper Functions ---
+# --- Helper Functions (FIXED) ---
 def haversine_distance(lat1, lon1, lat2, lon2):
     R = 6371000
     phi1, phi2 = math.radians(lat1), math.radians(lat2)
@@ -56,16 +56,18 @@ def haversine_distance(lat1, lon1, lat2, lon2):
     a = math.sin(delta_phi / 2)**2 + math.cos(phi1) * math.cos(phi2) * math.sin(delta_lambda / 2)**2
     return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
+# FIXED: Function now correctly accepts the cursor as an argument.
 def get_class_id_by_name(cursor):
     # This must match the class name in your database_setup.sql for the student list
     cursor.execute("SELECT id FROM classes WHERE class_name = 'BA - Anthropology'")
-    result = cur.fetchone()
+    result = cursor.fetchone()
     return result[0] if result else None
 
+# FIXED: Function now correctly accepts the cursor as an argument.
 def get_controller_id_by_username(cursor):
     # This must match the username in your database_setup.sql
     cursor.execute("SELECT id FROM users WHERE username = 'controller'")
-    result = cur.fetchone()
+    result = cursor.fetchone()
     return result[0] if result else None
 
 # --- Main & Authentication Routes ---
@@ -86,6 +88,7 @@ def login():
         try:
             with conn.cursor() as cur:
                 if username == CONTROLLER_USERNAME and password == CONTROLLER_PASSWORD:
+                    # FIXED: Pass the cursor to the helper function
                     controller_id = get_controller_id_by_username(cur)
                     if controller_id:
                         session.clear()
@@ -116,6 +119,7 @@ def student_page():
     if conn:
         try:
             with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+                # FIXED: Pass the cursor to the helper function
                 class_id = get_class_id_by_name(cur)
                 if class_id:
                     cur.execute("""
@@ -146,6 +150,7 @@ def controller_dashboard():
     if conn:
         try:
             with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+                # FIXED: Pass the cursor to the helper function
                 class_id = get_class_id_by_name(cur)
                 if class_id:
                     cur.execute("SELECT id, end_time FROM attendance_sessions WHERE class_id = %s AND is_active = TRUE AND end_time > NOW() AT TIME ZONE 'UTC' LIMIT 1", (class_id,))
@@ -167,6 +172,7 @@ def attendance_report():
     report_data, students = [], []
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+            # FIXED: Pass the cursor to the helper function
             class_id = get_class_id_by_name(cur)
             cur.execute("SELECT id, name, enrollment_no FROM students WHERE batch = %s ORDER BY enrollment_no", (BATCH_CODE,))
             students = cur.fetchall()
@@ -195,9 +201,9 @@ def export_csv():
         return redirect(url_for('attendance_report'))
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+            # FIXED: Pass the cursor to the helper function
             class_id = get_class_id_by_name(cur)
             
-            # Find the first-ever session date to start the report
             cur.execute("SELECT MIN(start_time AT TIME ZONE 'UTC') as first_date FROM attendance_sessions WHERE class_id = %s", (class_id,))
             first_date_record = cur.fetchone()
             if not first_date_record or not first_date_record['first_date']:
@@ -211,43 +217,27 @@ def export_csv():
             cur.execute("SELECT id, name, enrollment_no FROM students WHERE batch = %s ORDER BY enrollment_no", (BATCH_CODE,))
             students = cur.fetchall()
 
-            # Get all unique days a session was held (these are the "working days")
             cur.execute("SELECT DISTINCT DATE(start_time AT TIME ZONE 'UTC') as session_date FROM attendance_sessions WHERE class_id = %s", (class_id,))
             session_days = {row['session_date'] for row in cur.fetchall()}
             total_working_days = len(session_days)
 
-            # Get all attendance records for all time to build the map
             cur.execute("SELECT ar.student_id, DATE(s.start_time AT TIME ZONE 'UTC') AS session_date FROM attendance_records ar JOIN attendance_sessions s ON ar.session_id = s.id WHERE s.class_id = %s", (class_id,))
             attendance_map = { (rec['student_id'], rec['session_date']): 'P' for rec in cur.fetchall() }
             
             output = io.StringIO()
             writer = csv.writer(output)
             
-            # Write header block
-            writer.writerows([
-                ['School Name:', csv_config['school_name']],
-                ['Course Title:', csv_config['course_title']],
-                ['Professor Name:', csv_config['professor_name']],
-                [],
-                ['Key:'],
-                ['P', 'Present'],
-                ['A', 'Absent'],
-                ['H', 'Holiday'],
-                []
-            ])
+            writer.writerows([['School Name:', csv_config['school_name']], ['Course Title:', csv_config['course_title']], ['Professor Name:', csv_config['professor_name']], [], ['Key:'], ['P', 'Present'], ['A', 'Absent'], ['H', 'Holiday'], []])
             
-            # Write main table header with new percentage column
             header = ['Student Name', 'ID Number'] + [d.strftime('%Y-%m-%d') for d in date_range] + ['Attendance %']
             writer.writerow(header)
 
-            # Write student rows
             for student in students:
                 present_count = 0
                 row_data = []
-                # Populate P, A, or H for each day in the full date range
                 for date in date_range:
-                    status = 'H'  # Default to Holiday
-                    if date in session_days: # If it was a working day
+                    status = 'H'
+                    if date in session_days:
                         if attendance_map.get((student['id'], date)) == 'P':
                             status = 'P'
                             present_count += 1
@@ -255,11 +245,9 @@ def export_csv():
                             status = 'A'
                     row_data.append(status)
                 
-                # Calculate and format the attendance percentage
                 percentage = (present_count / total_working_days * 100) if total_working_days > 0 else 0
                 percentage_str = f"{percentage:.1f}%"
                 
-                # Write the complete row
                 writer.writerow([student['name'], student['enrollment_no']] + row_data + [percentage_str])
             
             output.seek(0)
@@ -316,6 +304,7 @@ def api_start_session():
     if not conn: return jsonify({"success": False, "message": "Database error."}), 503
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+            # FIXED: Pass the cursor to the helper function
             class_id = get_class_id_by_name(cur)
             cur.execute("SELECT id FROM attendance_sessions WHERE class_id = %s AND is_active = TRUE AND end_time > NOW() AT TIME ZONE 'UTC'", (class_id,))
             if cur.fetchone():
@@ -359,6 +348,7 @@ def api_get_students_for_day(date_str):
     if not conn: return jsonify({"success": False, "message": "Database error."}), 500
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+            # FIXED: Pass the cursor to the helper function
             class_id = get_class_id_by_name(cur)
             day_to_query = datetime.strptime(date_str, '%Y-%m-%d').date()
             cur.execute("SELECT id, enrollment_no, name FROM students WHERE batch = %s ORDER BY enrollment_no", (BATCH_CODE,))
@@ -395,6 +385,7 @@ def api_toggle_attendance_for_day():
     if not conn: return jsonify({"success": False, "message": "Database error."}), 500
     try:
         with conn.cursor() as cur:
+            # FIXED: Pass the cursor to the helper function
             class_id = get_class_id_by_name(cur)
             target_date = datetime.strptime(date_str, '%Y-%m-%d').date()
             cur.execute("SELECT id FROM attendance_sessions WHERE class_id = %s AND DATE(start_time AT TIME ZONE 'UTC') = %s ORDER BY start_time", (class_id, target_date))
@@ -445,6 +436,7 @@ def api_delete_day(date_str):
     if not conn: return jsonify({"success": False, "message": "Database error."}), 503
     try:
         with conn.cursor() as cur:
+            # FIXED: Pass the cursor to the helper function
             class_id = get_class_id_by_name(cur)
             target_date = datetime.strptime(date_str, '%Y-%m-%d').date()
             cur.execute("SELECT id FROM attendance_sessions WHERE class_id = %s AND DATE(start_time AT TIME ZONE 'UTC') = %s", (class_id, target_date))
