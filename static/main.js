@@ -1,209 +1,347 @@
-// static/main.js
+/**
+ * Frontend logic for the AIH Attendance System.
+ * Focus on a professional, mobile-first, modal-driven UX.
+ */
 
-document.addEventListener('DOMContentLoaded', () => {
-    // Check which page we are on and initialize its specific logic
-    if (document.getElementById('attendance-form')) {
-        console.log('Initializing Student Page Logic...');
-        initStudentPage();
-    }
-    
-    if (document.querySelector('.end-session-btn') || document.querySelector('.delete-day-btn')) {
-        console.log('Initializing Controller/Report Page Logic...');
-        initControllerAndReportPage();
-    }
+// =============================================================================
+// === UTILITY & HELPER FUNCTIONS =============================================
+// =============================================================================
 
-    if (document.getElementById('attendance-table')) {
-        console.log('Initializing Edit Attendance Page Logic...');
-        initEditAttendancePage();
-    }
-});
+function showStatusMessage(message, type) {
+    const statusDiv = document.getElementById('status-message');
+    if (!statusDiv) return;
+    statusDiv.textContent = message;
+    statusDiv.className = `status-message ${type}`;
+    statusDiv.style.display = 'block';
+    setTimeout(() => { statusDiv.style.display = 'none'; }, 5000);
+}
 
-// ==============================================================================
-// === STUDENT PAGE LOGIC (with diagnostics) ===
-// ==============================================================================
-function initStudentPage() {
-    const attendanceForm = document.getElementById('attendance-form');
-    const markAttendanceButton = document.getElementById('mark-btn');
-    const enrollmentNoInput = document.getElementById('enrollment_no');
-    const studentNameDisplay = document.getElementById('student-name-display');
-    const timerStudentSpan = document.getElementById('timer-student');
+function getAccurateLocation(successCallback, errorCallback) {
+    showStatusMessage('Getting location...', 'info');
+    navigator.geolocation.getCurrentPosition(
+        (pos) => {
+            if (pos.coords.accuracy < 150) {
+                successCallback(pos);
+            } else {
+                showStatusMessage('Improving location accuracy...', 'info');
+                const watchId = navigator.geolocation.watchPosition(
+                    (highAccPos) => {
+                        navigator.geolocation.clearWatch(watchId);
+                        successCallback(highAccPos);
+                    },
+                    (err) => {
+                        navigator.geolocation.clearWatch(watchId);
+                        errorCallback(`Could not get an accurate location: ${err.message}`);
+                    },
+                    { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
+                );
+            }
+        },
+        (err) => { errorCallback(`Could not get location: ${err.message}`); },
+        { enableHighAccuracy: false, timeout: 5000 }
+    );
+}
 
-    // New diagnostic elements
-    const diagnosticPanel = document.getElementById('diagnostic-panel');
-    const diagOutput = document.getElementById('diag-output');
-
-    if (!window.activeSessionDataStudent || !window.activeSessionDataStudent.id) {
-        console.log('No active session data found on student page.');
-        return;
-    }
-
-    startStudentTimer(window.activeSessionDataStudent.remaining_time, timerStudentSpan);
-    
-    enrollmentNoInput.addEventListener('input', debounce(fetchStudentName, 300));
-    attendanceForm.addEventListener('submit', handleAttendanceSubmit);
-
-    async function handleAttendanceSubmit(e) {
-        e.preventDefault();
-        markAttendanceButton.disabled = true;
-        markAttendanceButton.textContent = "Processing...";
-        showStatusMessage('Getting your location...', 'info');
-
-        // Show the diagnostic panel for debugging
-        if (diagnosticPanel) diagnosticPanel.style.display = 'block';
-
-        if (!navigator.geolocation) {
-            showStatusMessage('Geolocation is not supported by your browser.', 'error');
-            markAttendanceButton.disabled = false;
-            markAttendanceButton.textContent = "Mark My Attendance";
+function startRobustTimer(endTimeIsoString, timerElement) {
+    if (!endTimeIsoString || !timerElement) return;
+    const endTime = new Date(endTimeIsoString).getTime();
+    const timerInterval = setInterval(() => {
+        const remaining = endTime - new Date().getTime();
+        if (remaining <= 0) {
+            clearInterval(timerInterval);
+            timerElement.textContent = "Session Ended";
+            if (document.body.contains(document.getElementById('attendance-form'))) {
+                window.location.reload();
+            }
             return;
         }
+        const minutes = Math.floor(remaining / 60000);
+        const seconds = Math.floor((remaining % 60000) / 1000);
+        timerElement.textContent = `${minutes}m ${seconds.toString().padStart(2, '0')}s`;
+    }, 1000);
+}
 
-        navigator.geolocation.getCurrentPosition(
-            async (position) => {
-                const { latitude, longitude, accuracy } = position.coords;
-                const distance = haversineDistance(latitude, longitude, window.geofenceData.geofence_lat, window.geofenceData.geofence_lon);
+const debounce = (func, delay) => {
+    let timeout;
+    return (...args) => {
+        clearTimeout(timeout);
+        timeout = setTimeout(() => func.apply(this, args), delay);
+    };
+};
 
-                // Display diagnostic information
-                if (diagOutput) {
-                    diagOutput.innerHTML = `
-                        Target Lat: ${window.geofenceData.geofence_lat}<br>
-                        Target Lon: ${window.geofenceData.geofence_lon}<br>
-                        <hr>
-                        Your Lat: ${latitude.toFixed(6)}<br>
-                        Your Lon: ${longitude.toFixed(6)}<br>
-                        GPS Accuracy: ${accuracy.toFixed(0)} meters<br>
-                        <hr>
-                        Calculated Distance: <strong>${distance.toFixed(0)} meters</strong><br>
-                        Required Radius: <strong>${window.geofenceData.geofence_radius} meters</strong>
-                    `;
-                }
+// =============================================================================
+// === PAGE INITIALIZERS =======================================================
+// =============================================================================
 
-                if (distance > window.geofenceData.geofence_radius) {
-                    showStatusMessage(`You are ${distance.toFixed(0)}m away and outside the allowed radius.`, 'error');
-                    markAttendanceButton.disabled = false;
-                    markAttendanceButton.textContent = "Mark My Attendance";
-                    return;
-                }
+document.addEventListener('DOMContentLoaded', () => {
+    if (document.getElementById('attendance-form')) initStudentPage();
+    if (document.querySelector('.dashboard-content')) initControllerDashboard();
+    if (document.querySelector('.professional-table')) initReportPage();
+});
 
-                // If inside radius, proceed with submission
-                // **FIX STARTS HERE**
-                let data = { success: false }; // Declare 'data' here with a default value
-
-                try {
-                    const visitorId = getCanvasFingerprint();
-                    
-                    const formData = new URLSearchParams({
-                        enrollment_no: enrollmentNoInput.value.trim().toUpperCase(),
-                        session_id: window.activeSessionDataStudent.id,
-                        latitude: latitude,
-                        longitude: longitude,
-                        device_fingerprint: visitorId
-                    });
-
-                    const response = await fetch('/mark_attendance', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                        body: formData
-                    });
-
-                    data = await response.json(); // Assign the response data here
-                    showStatusMessage(data.message, data.category);
-
-                    if (data.success) {
-                        enrollmentNoInput.value = '';
-                        studentNameDisplay.textContent = '';
-                        attendanceForm.style.display = 'none'; // Hide form on success
-                    }
-                } catch (error) {
-                    console.error('Error during submission process:', error);
-                    showStatusMessage('An unexpected error occurred.', 'error');
-                } finally {
-                    // 'data' is now accessible here because it was declared outside the try block
-                    if (!data.success) {
-                        markAttendanceButton.disabled = false;
-                        markAttendanceButton.textContent = "Mark My Attendance";
-                    }
-                }
-                // **FIX ENDS HERE**
-            },
-            (geoError) => {
-                showStatusMessage('Geolocation error: ' + geoError.message, 'error');
-                if (diagOutput) diagOutput.textContent = `Geolocation Error: ${geoError.message}. Please ensure you have enabled location services for your browser.`;
-                markAttendanceButton.disabled = false;
-                markAttendanceButton.textContent = "Mark My Attendance";
-            },
-            { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
-        );
+function initStudentPage() {
+    const attendanceForm = document.getElementById('attendance-form');
+    if (!attendanceForm) return;
+    
+    const markButton = document.getElementById('mark-btn');
+    const enrollmentInput = document.getElementById('enrollment_no');
+    
+    if (window.activeSessionDataStudent?.end_time) {
+        const timerElement = document.getElementById('timer-student');
+        startRobustTimer(window.activeSessionDataStudent.end_time, timerElement);
     }
-
-    async function fetchStudentName() {
-        const enrollmentNo = enrollmentNoInput.value.trim();
+    
+    enrollmentInput.addEventListener('input', debounce(async () => {
+        const studentNameDisplay = document.getElementById('student-name-display');
+        const enrollmentNo = enrollmentInput.value.trim();
         if (enrollmentNo.length >= 5) {
-            try {
-                const response = await fetch(`/api/get_student_name/${enrollmentNo}`);
-                const data = await response.json();
-                studentNameDisplay.textContent = data.name ? `Name: ${data.name}` : 'Student not found.';
-                studentNameDisplay.style.color = data.name ? '#0056b3' : '#dc3545';
-            } catch (error) {
-                studentNameDisplay.textContent = 'Error fetching name.';
-            }
+            const response = await fetch(`/api/get_student_name/${enrollmentNo}`);
+            const data = await response.json();
+            studentNameDisplay.textContent = data.name ? `Name: ${data.name}` : 'Student not found.';
+            studentNameDisplay.style.color = data.name ? 'var(--primary-blue)' : 'var(--danger-red)';
         } else {
             studentNameDisplay.textContent = '';
         }
+    }, 300));
+
+    attendanceForm.addEventListener('submit', (e) => {
+        e.preventDefault();
+        markButton.disabled = true;
+        markButton.textContent = 'Verifying...';
+        getAccurateLocation(
+            async (position) => {
+                markButton.textContent = 'Submitting...';
+                const formData = new URLSearchParams({
+                    enrollment_no: enrollmentInput.value,
+                    session_id: window.activeSessionDataStudent.id,
+                    latitude: position.coords.latitude,
+                    longitude: position.coords.longitude,
+                });
+                const response = await fetch('/api/mark_attendance', { method: 'POST', body: formData });
+                const result = await response.json();
+                showStatusMessage(result.message, result.category);
+                if (result.success) {
+                    attendanceForm.style.display = 'none';
+                } else {
+                    markButton.disabled = false;
+                    markButton.textContent = 'Mark My Attendance';
+                }
+            },
+            (error) => {
+                showStatusMessage(error, 'error');
+                markButton.disabled = false;
+                markButton.textContent = 'Mark My Attendance';
+            }
+        );
+    });
+}
+
+function initControllerDashboard() {
+    const startButton = document.getElementById('start-session-btn');
+    const endButton = document.querySelector('.end-session-btn');
+    const liveManagerBtn = document.getElementById('live-manager-btn');
+
+    if (window.activeSessionData?.id) {
+        const timerElement = document.getElementById(`timer-${window.activeSessionData.id}`);
+        startRobustTimer(window.activeSessionData.end_time, timerElement);
+    }
+
+    if (startButton) {
+        startButton.addEventListener('click', () => {
+            startButton.disabled = true;
+            startButton.textContent = 'Getting Location...';
+            getAccurateLocation(async (position) => {
+                startButton.textContent = 'Starting...';
+                const response = await fetch('/api/start_session', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ latitude: position.coords.latitude, longitude: position.coords.longitude }),
+                });
+                const result = await response.json();
+                if (result.success) {
+                    window.location.reload();
+                } else {
+                    showStatusMessage(result.message, 'error');
+                    startButton.disabled = false;
+                    startButton.textContent = 'Start New Session';
+                }
+            }, (error) => {
+                showStatusMessage(error, 'error');
+                startButton.disabled = false;
+                startButton.textContent = 'Start New Session';
+            });
+        });
+    }
+    
+    if (endButton) {
+        endButton.addEventListener('click', async function() {
+            this.disabled = true;
+            await fetch(`/api/end_session/${this.dataset.sessionId}`, { method: 'POST' });
+            window.location.reload();
+        });
+    }
+
+    if (liveManagerBtn) {
+        liveManagerBtn.addEventListener('click', () => {
+            const sessionId = liveManagerBtn.dataset.sessionId;
+            setupManagerModal({
+                title: "Live Attendance Manager",
+                subtitle: `Session ID: ${sessionId}`,
+                fetchUrl: `/api/get_students_for_session/${sessionId}`,
+                apiUrl: '/api/toggle_attendance_for_session',
+                payload: { session_id: sessionId }
+            });
+        });
     }
 }
 
-// ==============================================================================
-// === CONTROLLER, REPORT, & EDIT PAGE LOGIC (Unchanged) ===
-// ==============================================================================
-function initControllerAndReportPage() {
-    const confirmationModal = document.getElementById('confirmation-modal');
-    const confirmMessage = document.getElementById('confirm-message');
-    const confirmYesBtn = document.getElementById('confirm-yes');
-    const confirmNoBtn = document.getElementById('confirm-no');
-    const modalCloseBtn = confirmationModal ? confirmationModal.querySelector('.close-button') : null;
-    let pendingDeleteDate = null;
-    function showConfirmationModal(message, dataToConfirm) { if (confirmationModal && confirmMessage) { confirmMessage.textContent = message; pendingDeleteDate = dataToConfirm; confirmationModal.style.display = 'block'; } }
-    function hideConfirmationModal() { if (confirmationModal) { confirmationModal.style.display = 'none'; } }
-    if (modalCloseBtn) modalCloseBtn.addEventListener('click', hideConfirmationModal);
-    if (confirmNoBtn) confirmNoBtn.addEventListener('click', hideConfirmationModal);
-    window.addEventListener('click', (event) => { if (event.target == confirmationModal) hideConfirmationModal(); });
-    if (confirmYesBtn) { confirmYesBtn.addEventListener('click', async () => { const dateToProcess = pendingDeleteDate; hideConfirmationModal(); if (dateToProcess) { await deleteDailyAttendance(dateToProcess); } pendingDeleteDate = null; }); }
-    document.querySelectorAll('.end-session-btn').forEach(button => { button.addEventListener('click', async function() { const sessionId = this.dataset.sessionId; showStatusMessage('Ending session...', 'info'); try { const response = await fetch(`/end_session/${sessionId}`, { method: 'POST' }); const data = await response.json(); showStatusMessage(data.message, data.category); if (data.success) { setTimeout(() => window.location.reload(), 1000); } } catch (error) { showStatusMessage('An error occurred while ending the session.', 'error'); } }); });
-    if (typeof window.activeSessionData !== 'undefined' && window.activeSessionData.id) { let remainingTime = window.activeSessionData.remaining_time; let timerDisplay = document.getElementById(`timer-${window.activeSessionData.id}`); if (timerDisplay && remainingTime > 0) { let controllerTimer = setInterval(() => { remainingTime--; if (remainingTime <= 0) { clearInterval(controllerTimer); window.location.reload(); } let minutes = Math.floor(remainingTime / 60); let seconds = remainingTime % 60; timerDisplay.innerHTML = `${minutes}m ${seconds}s`; }, 1000); } }
-    document.body.addEventListener('click', function(event) { if (event.target && event.target.classList.contains('delete-day-btn')) { const dateToDelete = event.target.dataset.date; showConfirmationModal(`Are you sure you want to delete all attendance records for ${dateToDelete}? This action cannot be undone.`, dateToDelete); } });
-    async function deleteDailyAttendance(date) { showStatusMessage(`Deleting attendance for ${date}...`, 'info'); try { const response = await fetch('/delete_daily_attendance', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ date: date }) }); const data = await response.json(); showStatusMessage(data.message, data.category); if (data.success) { setTimeout(() => window.location.reload(), 1000); } } catch (error) { showStatusMessage('A network error occurred during deletion.', 'error'); } }
+function initReportPage() {
+    // Edit day functionality
+    document.querySelectorAll('.edit-day-btn').forEach(button => {
+        button.addEventListener('click', (e) => {
+            const date = e.target.dataset.date;
+            setupManagerModal({
+                title: "Edit Attendance",
+                subtitle: `Date: ${date}`,
+                fetchUrl: `/api/get_students_for_day/${date}`,
+                apiUrl: '/api/toggle_attendance_for_day',
+                payload: { date: date }
+            });
+        });
+    });
+
+    // Delete day functionality
+    const deleteModal = document.getElementById('confirm-delete-modal');
+    const confirmDeleteBtn = document.getElementById('confirm-delete-btn');
+    const deleteDateDisplay = document.getElementById('modal-delete-date-display');
+    let dateToDelete = null;
+
+    document.querySelectorAll('.delete-day-btn').forEach(button => {
+        button.addEventListener('click', (e) => {
+            dateToDelete = e.target.dataset.date;
+            deleteDateDisplay.textContent = dateToDelete;
+            deleteModal.style.display = 'block';
+            document.body.classList.add('modal-open');
+        });
+    });
+
+    confirmDeleteBtn.addEventListener('click', async () => {
+        if (!dateToDelete) return;
+        confirmDeleteBtn.disabled = true;
+        const response = await fetch(`/api/delete_day/${dateToDelete}`, { method: 'DELETE' });
+        const result = await response.json();
+        showStatusMessage(result.message, result.success ? 'success' : 'error');
+        if (result.success) {
+            document.getElementById(`row-${dateToDelete}`).remove();
+        }
+        closeModal(deleteModal);
+        confirmDeleteBtn.disabled = false;
+    });
+
+    deleteModal.querySelectorAll('.close-btn').forEach(btn => btn.addEventListener('click', () => closeModal(deleteModal)));
 }
 
-function initEditAttendancePage() {
-    const editAttendanceTable = document.getElementById('attendance-table');
-    const sessionId = editAttendanceTable.dataset.sessionId;
-    async function fetchStudentsForEdit(sessionId) { const tbody = editAttendanceTable.querySelector('tbody'); tbody.innerHTML = '<tr><td colspan="3">Loading students...</td></tr>'; try { const response = await fetch(`/api/get_session_students_for_edit/${sessionId}`); const data = await response.json(); if (!data.success || !data.students) { tbody.innerHTML = `<tr><td colspan="3">${data.message || 'Failed to load students.'}</td></tr>`; return; } tbody.innerHTML = ''; data.students.forEach(student => { const row = tbody.insertRow(); row.innerHTML = `<td>${student.enrollment_no}</td><td>${student.name}</td><td><input type="checkbox" data-student-id="${student.id}" class="attendance-checkbox" ${student.is_present ? 'checked' : ''}></td>`; }); tbody.querySelectorAll('.attendance-checkbox').forEach(checkbox => { checkbox.addEventListener('change', function() { const studentId = this.dataset.studentId; const isPresent = this.checked; updateAttendanceRecord(sessionId, studentId, isPresent, this); }); }); } catch (error) { tbody.innerHTML = '<tr><td colspan="3">An unexpected error occurred.</td></tr>'; } }
-    async function updateAttendanceRecord(sessionId, studentId, isPresent, checkboxElement) { showStatusMessage('Updating attendance...', 'info'); try { const response = await fetch('/api/update_attendance_record', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ session_id: sessionId, student_id: studentId, is_present: isPresent }) }); const data = await response.json(); showStatusMessage(data.message, data.success ? 'success' : 'error'); if (!data.success) { checkboxElement.checked = !isPresent; } } catch (error) { showStatusMessage('An error occurred while updating.', 'error'); checkboxElement.checked = !isPresent; } }
-    fetchStudentsForEdit(sessionId);
+
+// =============================================================================
+// === MODAL MANAGER (REUSABLE LOGIC) ==========================================
+// =============================================================================
+
+const managerModal = document.getElementById('manager-modal');
+const modalTitle = document.getElementById('modal-title');
+const modalSubtitle = document.getElementById('modal-subtitle');
+const studentListContainer = document.getElementById('student-list-container');
+const searchInput = document.getElementById('student-search-input');
+
+async function setupManagerModal(config) {
+    modalTitle.textContent = config.title;
+    modalSubtitle.textContent = config.subtitle;
+    studentListContainer.innerHTML = '<p style="text-align:center;">Loading students...</p>';
+    openModal(managerModal);
+    
+    const response = await fetch(config.fetchUrl);
+    const data = await response.json();
+
+    if (data.success) {
+        renderStudentList(data.students, config);
+        searchInput.oninput = () => renderStudentList(data.students.filter(s => 
+            s.name.toLowerCase().includes(searchInput.value.toLowerCase()) || 
+            s.enrollment_no.toLowerCase().includes(searchInput.value.toLowerCase())
+        ), config);
+    } else {
+        studentListContainer.innerHTML = `<p class="error">${data.message}</p>`;
+    }
 }
 
+function renderStudentList(students, config) {
+    studentListContainer.innerHTML = '';
+    if (students.length === 0) {
+        studentListContainer.innerHTML = '<p style="text-align:center;">No students match your search.</p>';
+        return;
+    }
+    students.forEach(student => {
+        const item = document.createElement('div');
+        item.className = 'student-item';
+        item.innerHTML = `
+            <div class="student-info">
+                <div class="name">${student.name}</div>
+                <div class="enrollment">${student.enrollment_no}</div>
+            </div>
+            <button class="button attendance-toggle-btn ${student.is_present ? 'is-present' : 'is-absent'}" data-student-id="${student.id}">
+                ${student.is_present ? 'Mark Absent' : 'Mark Present'}
+            </button>
+        `;
+        studentListContainer.appendChild(item);
+    });
 
-// ==============================================================================
-// === UTILITY FUNCTIONS (Unchanged) ===
-// ==============================================================================
-function getCanvasFingerprint() {
-    const canvas = document.createElement('canvas');
-    const ctx = canvas.getContext('2d');
-    const txt = 'Browser-ID: Ritik Attendance App';
-    ctx.textBaseline = "top";
-    ctx.font = "14px 'Arial'";
-    ctx.textBaseline = "alphabetic";
-    ctx.fillStyle = "#f60";
-    ctx.fillRect(125, 1, 62, 20);
-    ctx.fillStyle = "#069";
-    ctx.fillText(txt, 2, 15);
-    ctx.fillStyle = "rgba(102, 204, 0, 0.7)";
-    ctx.fillText(txt, 4, 17);
-    return canvas.toDataURL();
+    studentListContainer.querySelectorAll('.attendance-toggle-btn').forEach(btn => {
+        btn.addEventListener('click', async (e) => {
+            const button = e.target;
+            const studentId = button.dataset.studentId;
+            const isCurrentlyPresent = button.classList.contains('is-present');
+            
+            button.disabled = true; // Prevent double-clicks
+            
+            const response = await fetch(config.apiUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ ...config.payload, student_id: studentId, is_present: !isCurrentlyPresent })
+            });
+
+            const result = await response.json();
+            if (result.success) {
+                // Toggle state visually
+                button.classList.toggle('is-present');
+                button.classList.toggle('is-absent');
+                button.textContent = isCurrentlyPresent ? 'Mark Present' : 'Mark Absent';
+            } else {
+                showStatusMessage('Update failed.', 'error');
+            }
+            button.disabled = false;
+        });
+    });
 }
 
-function startStudentTimer(remainingTime, timerElement) { if (!timerElement || remainingTime <= 0) return; let timer = setInterval(() => { remainingTime--; if (remainingTime <= 0) { clearInterval(timer); timerElement.innerHTML = "Session ended."; const markBtn = document.getElementById('mark-btn'); if(markBtn) markBtn.disabled = true; return; } let minutes = Math.floor(remainingTime / 60); let seconds = remainingTime % 60; timerElement.innerHTML = `${minutes}m ${seconds}s`; }, 1000); }
-function showStatusMessage(message, type) { const statusMessageDiv = document.getElementById('status-message'); if (statusMessageDiv) { statusMessageDiv.textContent = message; statusMessageDiv.className = `status-message ${type}`; statusMessageDiv.style.display = 'block'; setTimeout(() => { statusMessageDiv.style.display = 'none'; }, 5000); } }
-function haversineDistance(lat1, lon1, lat2, lon2) { const R = 6371e3; const φ1 = lat1 * Math.PI / 180; const φ2 = lat2 * Math.PI / 180; const Δφ = (lat2 - lat1) * Math.PI / 180; const Δλ = (lon2 - lon1) * Math.PI / 180; const a = Math.sin(Δφ / 2) * Math.sin(Δφ / 2) + Math.cos(φ1) * Math.cos(φ2) * Math.sin(Δλ / 2) * Math.sin(Δλ / 2); const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)); return R * c; }
-function debounce(func, delay) { let timeout; return function(...args) { clearTimeout(timeout); timeout = setTimeout(() => func.apply(this, args), delay); }; }
+// Generic modal open/close functions
+function openModal(modalElement) {
+    if (modalElement) {
+        modalElement.style.display = 'block';
+        document.body.classList.add('modal-open');
+    }
+}
+
+function closeModal(modalElement) {
+    if (modalElement) {
+        modalElement.style.display = 'none';
+        document.body.classList.remove('modal-open');
+    }
+}
+
+// Add event listeners to all close buttons in all modals
+document.querySelectorAll('.modal').forEach(modal => {
+    modal.addEventListener('click', (e) => {
+        if (e.target === modal) closeModal(modal); // Close if clicking on backdrop
+    });
+    modal.querySelectorAll('.close-btn').forEach(btn => {
+        btn.addEventListener('click', () => closeModal(modal));
+    });
+});
