@@ -8,7 +8,6 @@ import secrets
 import math
 import io
 import csv
-from calendar import monthrange
 
 app = Flask(__name__)
 # Use a strong, consistent secret key from environment variables for production
@@ -60,13 +59,13 @@ def haversine_distance(lat1, lon1, lat2, lon2):
 def get_class_id_by_name(cursor):
     # This must match the class name in your database_setup.sql for the student list
     cursor.execute("SELECT id FROM classes WHERE class_name = 'BA - Anthropology'")
-    result = cursor.fetchone()
+    result = cur.fetchone()
     return result[0] if result else None
 
 def get_controller_id_by_username(cursor):
     # This must match the username in your database_setup.sql
     cursor.execute("SELECT id FROM users WHERE username = 'controller'")
-    result = cursor.fetchone()
+    result = cur.fetchone()
     return result[0] if result else None
 
 # --- Main & Authentication Routes ---
@@ -185,15 +184,11 @@ def attendance_report():
         if conn: conn.close()
     return render_template('attendance_report.html', report_data=report_data, students=students, class_name=CLASS_NAME)
 
-# --- REBUILT CSV EXPORT ---
+# --- UPGRADED CSV EXPORT ---
 @app.route('/export_csv')
 @controller_required
 def export_csv():
     csv_config = { 'school_name': 'AIH Dept.', 'course_title': 'AIH-DSM-311', 'professor_name': 'KRS Chandel' }
-    today = datetime.now(timezone.utc)
-    year, month = today.year, today.month
-    _, num_days = monthrange(year, month)
-    month_dates = [datetime(year, month, day).date() for day in range(1, num_days + 1)]
     conn = get_db_connection()
     if not conn:
         flash("Database connection failed.", "danger")
@@ -201,32 +196,78 @@ def export_csv():
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
             class_id = get_class_id_by_name(cur)
+            
+            # Find the first-ever session date to start the report
+            cur.execute("SELECT MIN(start_time AT TIME ZONE 'UTC') as first_date FROM attendance_sessions WHERE class_id = %s", (class_id,))
+            first_date_record = cur.fetchone()
+            if not first_date_record or not first_date_record['first_date']:
+                flash("No attendance data available to export.", "info")
+                return redirect(url_for('attendance_report'))
+            
+            start_date = first_date_record['first_date'].date()
+            end_date = datetime.now(timezone.utc).date()
+            date_range = [start_date + timedelta(days=x) for x in range((end_date - start_date).days + 1)]
+
             cur.execute("SELECT id, name, enrollment_no FROM students WHERE batch = %s ORDER BY enrollment_no", (BATCH_CODE,))
             students = cur.fetchall()
 
-            cur.execute("SELECT DISTINCT DATE(start_time AT TIME ZONE 'UTC') as session_date FROM attendance_sessions WHERE class_id = %s AND EXTRACT(MONTH FROM start_time AT TIME ZONE 'UTC') = %s AND EXTRACT(YEAR FROM start_time AT TIME ZONE 'UTC') = %s", (class_id, month, year))
+            # Get all unique days a session was held (these are the "working days")
+            cur.execute("SELECT DISTINCT DATE(start_time AT TIME ZONE 'UTC') as session_date FROM attendance_sessions WHERE class_id = %s", (class_id,))
             session_days = {row['session_date'] for row in cur.fetchall()}
+            total_working_days = len(session_days)
 
-            cur.execute("SELECT ar.student_id, DATE(s.start_time AT TIME ZONE 'UTC') AS session_date FROM attendance_records ar JOIN attendance_sessions s ON ar.session_id = s.id WHERE s.class_id = %s AND EXTRACT(MONTH FROM s.start_time AT TIME ZONE 'UTC') = %s AND EXTRACT(YEAR FROM s.start_time AT TIME ZONE 'UTC') = %s", (class_id, month, year))
+            # Get all attendance records for all time to build the map
+            cur.execute("SELECT ar.student_id, DATE(s.start_time AT TIME ZONE 'UTC') AS session_date FROM attendance_records ar JOIN attendance_sessions s ON ar.session_id = s.id WHERE s.class_id = %s", (class_id,))
             attendance_map = { (rec['student_id'], rec['session_date']): 'P' for rec in cur.fetchall() }
             
             output = io.StringIO()
             writer = csv.writer(output)
-            writer.writerows([ ['School Name:', csv_config['school_name']], ['Course Title:', csv_config['course_title']], ['Professor Name:', csv_config['professor_name']], [], ['Key:'], ['P', 'Present'], ['A', 'Absent'], ['H', 'Holiday'], [] ])
-            writer.writerow(['Student Name', 'ID Number'] + [d.day for d in month_dates])
+            
+            # Write header block
+            writer.writerows([
+                ['School Name:', csv_config['school_name']],
+                ['Course Title:', csv_config['course_title']],
+                ['Professor Name:', csv_config['professor_name']],
+                [],
+                ['Key:'],
+                ['P', 'Present'],
+                ['A', 'Absent'],
+                ['H', 'Holiday'],
+                []
+            ])
+            
+            # Write main table header with new percentage column
+            header = ['Student Name', 'ID Number'] + [d.strftime('%Y-%m-%d') for d in date_range] + ['Attendance %']
+            writer.writerow(header)
 
+            # Write student rows
             for student in students:
-                row = [student['name'], student['enrollment_no']]
-                for date in month_dates:
-                    status = 'H' if date not in session_days else attendance_map.get((student['id'], date), 'A')
-                    row.append(status)
-                writer.writerow(row)
+                present_count = 0
+                row_data = []
+                # Populate P, A, or H for each day in the full date range
+                for date in date_range:
+                    status = 'H'  # Default to Holiday
+                    if date in session_days: # If it was a working day
+                        if attendance_map.get((student['id'], date)) == 'P':
+                            status = 'P'
+                            present_count += 1
+                        else:
+                            status = 'A'
+                    row_data.append(status)
+                
+                # Calculate and format the attendance percentage
+                percentage = (present_count / total_working_days * 100) if total_working_days > 0 else 0
+                percentage_str = f"{percentage:.1f}%"
+                
+                # Write the complete row
+                writer.writerow([student['name'], student['enrollment_no']] + row_data + [percentage_str])
             
             output.seek(0)
-            file_name = f"AIH_Attendance_{year}_{month:02d}.csv"
+            file_name = f"AIH_Attendance_Report_{start_date}_to_{end_date}.csv"
             return send_file(io.BytesIO(output.getvalue().encode('utf-8')), mimetype='text/csv', as_attachment=True, download_name=file_name)
     finally:
         if conn: conn.close()
+
 
 # --- API Endpoints ---
 @app.route('/api/mark_attendance', methods=['POST'])
@@ -423,3 +464,4 @@ if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     debug = os.environ.get('FLASK_DEBUG', 'False').lower() in ['true', '1', 't']
     app.run(host='0.0.0.0', port=port, debug=debug)
+
