@@ -11,11 +11,12 @@ import csv
 from calendar import monthrange
 
 app = Flask(__name__)
-app.secret_key = os.environ.get('SECRET_KEY', os.urandom(32))
+# Use a strong, consistent secret key from environment variables for production
+app.secret_key = os.environ.get('SECRET_KEY', 'a_strong_default_secret_key_for_development')
 
-# --- Application Configuration ---
+# --- Application Configuration for AIH Department ---
 CLASS_NAME = 'B.A. - AIH'
-BATCH_CODE = 'BA' # Assuming same student list
+BATCH_CODE = 'BA' # Using the same student list as per database_setup.sql
 GEOFENCE_RADIUS = 50  # Radius in meters
 
 # --- Controller Credentials (Use environment variables for production) ---
@@ -57,13 +58,13 @@ def haversine_distance(lat1, lon1, lat2, lon2):
     return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 def get_class_id_by_name(cursor):
-    # This should match the class name in your database_setup.sql
+    # This must match the class name in your database_setup.sql for the student list
     cursor.execute("SELECT id FROM classes WHERE class_name = 'BA - Anthropology'")
     result = cursor.fetchone()
     return result[0] if result else None
 
 def get_controller_id_by_username(cursor):
-    # This should match the username in your database_setup.sql
+    # This must match the username in your database_setup.sql
     cursor.execute("SELECT id FROM users WHERE username = 'controller'")
     result = cursor.fetchone()
     return result[0] if result else None
@@ -98,7 +99,7 @@ def login():
                 else:
                     flash("Invalid username or password.", "danger")
         finally:
-            conn.close()
+            if conn: conn.close()
     return render_template('login.html', class_name=CLASS_NAME)
 
 @app.route('/logout')
@@ -110,7 +111,7 @@ def logout():
 # --- Student & Controller Views ---
 @app.route('/student')
 def student_page():
-    active_session, present_students = None, None
+    active_session, present_students, geofence_data = None, None, None
     todays_date = datetime.now(timezone.utc).strftime('%A, %B %d, %Y')
     conn = get_db_connection()
     if conn:
@@ -118,23 +119,25 @@ def student_page():
             with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
                 class_id = get_class_id_by_name(cur)
                 if class_id:
-                    cur.execute("SELECT id, end_time FROM attendance_sessions WHERE class_id = %s AND is_active = TRUE AND end_time > NOW() AT TIME ZONE 'UTC' LIMIT 1", (class_id,))
+                    cur.execute("""
+                        SELECT id, end_time, geofence_lat, geofence_lon, geofence_radius FROM attendance_sessions 
+                        WHERE class_id = %s AND is_active = TRUE AND end_time > NOW() AT TIME ZONE 'UTC' LIMIT 1
+                    """, (class_id,))
                     session_data = cur.fetchone()
                     if session_data:
                         active_session = {'id': session_data['id'], 'end_time': session_data['end_time'].isoformat()}
+                        geofence_data = { 'lat': session_data['geofence_lat'], 'lon': session_data['geofence_lon'], 'radius': session_data['geofence_radius'] }
                     else:
                         today_utc = datetime.now(timezone.utc).date()
                         cur.execute("""
                             SELECT DISTINCT s.name, s.enrollment_no FROM attendance_records ar
-                            JOIN students s ON ar.student_id = s.id
-                            JOIN attendance_sessions ases ON ar.session_id = ases.id
-                            WHERE ases.class_id = %s AND DATE(ases.start_time AT TIME ZONE 'UTC') = %s
-                            ORDER BY s.enrollment_no ASC
+                            JOIN students s ON ar.student_id = s.id JOIN attendance_sessions ases ON ar.session_id = ases.id
+                            WHERE ases.class_id = %s AND DATE(ases.start_time AT TIME ZONE 'UTC') = %s ORDER BY s.enrollment_no ASC
                         """, (class_id, today_utc))
                         present_students = cur.fetchall()
         finally:
-            conn.close()
-    return render_template('student_attendance.html', active_session=active_session, present_students=present_students, class_name=CLASS_NAME, todays_date=todays_date)
+            if conn: conn.close()
+    return render_template('student_attendance.html', active_session=active_session, present_students=present_students, class_name=CLASS_NAME, todays_date=todays_date, geofence_data=geofence_data)
 
 @app.route('/controller_dashboard')
 @controller_required
@@ -151,7 +154,7 @@ def controller_dashboard():
                     if session_data:
                         active_session = {'id': session_data['id'], 'end_time': session_data['end_time'].isoformat()}
         finally:
-            conn.close()
+            if conn: conn.close()
     return render_template('admin_dashboard.html', active_session=active_session, class_name=CLASS_NAME, username=session.get('username'))
 
 @app.route('/attendance_report')
@@ -174,109 +177,58 @@ def attendance_report():
 
             for class_date in class_dates:
                 daily_entry = {'date': class_date.strftime('%Y-%m-%d'), 'students': []}
-                
-                cur.execute("""
-                    SELECT DISTINCT student_id FROM attendance_records ar 
-                    JOIN attendance_sessions s ON ar.session_id = s.id 
-                    WHERE s.class_id = %s AND DATE(s.start_time AT TIME ZONE 'UTC') = %s
-                """, (class_id, class_date))
+                cur.execute("SELECT DISTINCT student_id FROM attendance_records ar JOIN attendance_sessions s ON ar.session_id = s.id WHERE s.class_id = %s AND DATE(s.start_time AT TIME ZONE 'UTC') = %s", (class_id, class_date))
                 present_ids = {row['student_id'] for row in cur.fetchall()}
-                
-                student_statuses = [{'status': 'Present' if student['id'] in present_ids else 'Absent'} for student in students]
-                daily_entry['students'] = student_statuses
+                daily_entry['students'] = [{'status': 'Present' if student['id'] in present_ids else 'Absent'} for student in students]
                 report_data.append(daily_entry)
     finally:
-        conn.close()
-
+        if conn: conn.close()
     return render_template('attendance_report.html', report_data=report_data, students=students, class_name=CLASS_NAME)
 
 # --- REBUILT CSV EXPORT ---
 @app.route('/export_csv')
 @controller_required
 def export_csv():
-    # --- CSV Header Information ---
-    csv_config = {
-        'school_name': 'AIH Dept.',
-        'course_title': 'AIH-DSM-311',
-        'professor_name': 'KRS Chandel'
-    }
-
-    # For this example, we generate the report for the current month.
-    # A more advanced version could let the user select a month.
+    csv_config = { 'school_name': 'AIH Dept.', 'course_title': 'AIH-DSM-311', 'professor_name': 'KRS Chandel' }
     today = datetime.now(timezone.utc)
     year, month = today.year, today.month
     _, num_days = monthrange(year, month)
     month_dates = [datetime(year, month, day).date() for day in range(1, num_days + 1)]
-
     conn = get_db_connection()
     if not conn:
         flash("Database connection failed.", "danger")
         return redirect(url_for('attendance_report'))
-
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
             class_id = get_class_id_by_name(cur)
             cur.execute("SELECT id, name, enrollment_no FROM students WHERE batch = %s ORDER BY enrollment_no", (BATCH_CODE,))
             students = cur.fetchall()
 
-            # Fetch all session days for the current month
-            cur.execute("""
-                SELECT DISTINCT DATE(start_time AT TIME ZONE 'UTC') as session_date 
-                FROM attendance_sessions WHERE class_id = %s 
-                AND EXTRACT(MONTH FROM start_time AT TIME ZONE 'UTC') = %s 
-                AND EXTRACT(YEAR FROM start_time AT TIME ZONE 'UTC') = %s
-            """, (class_id, month, year))
+            cur.execute("SELECT DISTINCT DATE(start_time AT TIME ZONE 'UTC') as session_date FROM attendance_sessions WHERE class_id = %s AND EXTRACT(MONTH FROM start_time AT TIME ZONE 'UTC') = %s AND EXTRACT(YEAR FROM start_time AT TIME ZONE 'UTC') = %s", (class_id, month, year))
             session_days = {row['session_date'] for row in cur.fetchall()}
 
-            # Fetch all attendance records for the current month
-            cur.execute("""
-                SELECT ar.student_id, DATE(s.start_time AT TIME ZONE 'UTC') AS session_date
-                FROM attendance_records ar JOIN attendance_sessions s ON ar.session_id = s.id
-                WHERE s.class_id = %s 
-                AND EXTRACT(MONTH FROM s.start_time AT TIME ZONE 'UTC') = %s
-                AND EXTRACT(YEAR FROM s.start_time AT TIME ZONE 'UTC') = %s
-            """, (class_id, month, year))
-            
-            attendance_map = {}
-            for rec in cur.fetchall():
-                attendance_map[(rec['student_id'], rec['session_date'])] = 'P' # Present
+            cur.execute("SELECT ar.student_id, DATE(s.start_time AT TIME ZONE 'UTC') AS session_date FROM attendance_records ar JOIN attendance_sessions s ON ar.session_id = s.id WHERE s.class_id = %s AND EXTRACT(MONTH FROM s.start_time AT TIME ZONE 'UTC') = %s AND EXTRACT(YEAR FROM s.start_time AT TIME ZONE 'UTC') = %s", (class_id, month, year))
+            attendance_map = { (rec['student_id'], rec['session_date']): 'P' for rec in cur.fetchall() }
             
             output = io.StringIO()
             writer = csv.writer(output)
+            writer.writerows([ ['School Name:', csv_config['school_name']], ['Course Title:', csv_config['course_title']], ['Professor Name:', csv_config['professor_name']], [], ['Key:'], ['P', 'Present'], ['A', 'Absent'], ['H', 'Holiday'], [] ])
+            writer.writerow(['Student Name', 'ID Number'] + [d.day for d in month_dates])
 
-            # Write header block
-            writer.writerow(['School Name:', csv_config['school_name']])
-            writer.writerow(['Course Title:', csv_config['course_title']])
-            writer.writerow(['Professor Name:', csv_config['professor_name']])
-            writer.writerow([])
-            writer.writerow(['Key:'])
-            writer.writerow(['P', 'Present'])
-            writer.writerow(['A', 'Absent'])
-            writer.writerow(['H', 'Holiday'])
-            writer.writerow([])
-            
-            # Write main table header
-            header = ['Student Name', 'ID Number'] + [d.day for d in month_dates]
-            writer.writerow(header)
-
-            # Write student rows
             for student in students:
                 row = [student['name'], student['enrollment_no']]
                 for date in month_dates:
-                    if date not in session_days:
-                        row.append('H') # Holiday
-                    else:
-                        status = attendance_map.get((student['id'], date), 'A') # Absent if not found
-                        row.append(status)
+                    status = 'H' if date not in session_days else attendance_map.get((student['id'], date), 'A')
+                    row.append(status)
                 writer.writerow(row)
             
             output.seek(0)
             file_name = f"AIH_Attendance_{year}_{month:02d}.csv"
             return send_file(io.BytesIO(output.getvalue().encode('utf-8')), mimetype='text/csv', as_attachment=True, download_name=file_name)
     finally:
-        conn.close()
+        if conn: conn.close()
 
-# --- ALL API Endpoints ---
+# --- API Endpoints ---
 @app.route('/api/mark_attendance', methods=['POST'])
 def api_mark_attendance():
     data = request.form
@@ -286,19 +238,13 @@ def api_mark_attendance():
 
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
-            # Daily Uniqueness Check
-            cur.execute("""
-                SELECT ar.id FROM attendance_records ar
-                JOIN students s ON ar.student_id = s.id
-                JOIN attendance_sessions ases ON ar.session_id = ases.id
-                WHERE s.enrollment_no = %s AND DATE(ases.start_time AT TIME ZONE 'UTC') = %s
-            """, (data['enrollment_no'].strip().upper(), datetime.now(timezone.utc).date()))
-            if cur.fetchone():
-                return jsonify({"success": False, "message": "You have already marked attendance today.", "category": "warning"}), 409
-
             cur.execute("SELECT id, name FROM students WHERE enrollment_no = %s AND batch = %s", (data['enrollment_no'].strip().upper(), BATCH_CODE))
             student = cur.fetchone()
             if not student: return jsonify({"success": False, "message": "Enrollment number not found.", "category": "danger"}), 404
+
+            cur.execute("SELECT id FROM attendance_records ar JOIN attendance_sessions ases ON ar.session_id = ases.id WHERE ar.student_id = %s AND DATE(ases.start_time AT TIME ZONE 'UTC') = %s", (student['id'], datetime.now(timezone.utc).date()))
+            if cur.fetchone():
+                return jsonify({"success": False, "message": "You have already marked attendance today.", "category": "warning"}), 409
 
             cur.execute("SELECT id, geofence_lat, geofence_lon FROM attendance_sessions WHERE id = %s AND is_active = TRUE AND end_time > NOW() AT TIME ZONE 'UTC'", (data['session_id'],))
             session_info = cur.fetchone()
@@ -307,16 +253,11 @@ def api_mark_attendance():
             distance = haversine_distance(float(data['latitude']), float(data['longitude']), session_info['geofence_lat'], session_info['geofence_lon'])
             if distance > GEOFENCE_RADIUS: return jsonify({"success": False, "message": f"You are {distance:.0f}m away. Move within {GEOFENCE_RADIUS}m.", "category": "danger"}), 403
 
-            # IP Uniqueness Check
             cur.execute("SELECT 1 FROM attendance_records WHERE session_id = %s AND ip_address = %s", (session_info['id'], user_ip))
             if cur.fetchone():
                 return jsonify({"success": False, "message": "This network has already been used by another student.", "category": "danger"}), 403
             
-            cur.execute("""
-                INSERT INTO attendance_records (session_id, student_id, timestamp, latitude, longitude, ip_address) 
-                VALUES (%s, %s, NOW() AT TIME ZONE 'UTC', %s, %s, %s)
-            """, (session_info['id'], student['id'], data['latitude'], data['longitude'], user_ip))
-            
+            cur.execute("INSERT INTO attendance_records (session_id, student_id, timestamp, latitude, longitude, ip_address) VALUES (%s, %s, NOW() AT TIME ZONE 'UTC', %s, %s, %s)", (session_info['id'], student['id'], data['latitude'], data['longitude'], user_ip))
             conn.commit()
             return jsonify({"success": True, "message": f"{student['name']}, your attendance is marked!", "category": "success"})
     except (Exception, psycopg2.Error) as e:
@@ -330,8 +271,6 @@ def api_mark_attendance():
 @controller_required
 def api_start_session():
     data = request.get_json()
-    if not data or 'latitude' not in data or 'longitude' not in data:
-        return jsonify({"success": False, "message": "Location data not provided."}), 400
     conn = get_db_connection()
     if not conn: return jsonify({"success": False, "message": "Database error."}), 503
     try:
@@ -340,15 +279,7 @@ def api_start_session():
             cur.execute("SELECT id FROM attendance_sessions WHERE class_id = %s AND is_active = TRUE AND end_time > NOW() AT TIME ZONE 'UTC'", (class_id,))
             if cur.fetchone():
                 return jsonify({"success": False, "message": "An active session already exists."}), 409
-
-            cur.execute(
-                """
-                INSERT INTO attendance_sessions (class_id, controller_id, session_token, start_time, end_time, is_active, geofence_lat, geofence_lon, geofence_radius) 
-                VALUES (%s, %s, %s, NOW() AT TIME ZONE 'UTC', NOW() AT TIME ZONE 'UTC' + interval '5 minutes', TRUE, %s, %s, %s) 
-                RETURNING id, end_time
-                """,
-                (class_id, session['user_id'], secrets.token_hex(16), data['latitude'], data['longitude'], GEOFENCE_RADIUS)
-            )
+            cur.execute("INSERT INTO attendance_sessions (class_id, controller_id, session_token, start_time, end_time, is_active, geofence_lat, geofence_lon, geofence_radius) VALUES (%s, %s, %s, NOW() AT TIME ZONE 'UTC', NOW() AT TIME ZONE 'UTC' + interval '5 minutes', TRUE, %s, %s, %s) RETURNING id, end_time", (class_id, session['user_id'], secrets.token_hex(16), data['latitude'], data['longitude'], GEOFENCE_RADIUS))
             new_session = cur.fetchone()
             conn.commit()
             return jsonify({"success": True, "session": {'id': new_session['id'], 'end_time': new_session['end_time'].isoformat()}})
@@ -389,23 +320,15 @@ def api_get_students_for_day(date_str):
         with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
             class_id = get_class_id_by_name(cur)
             day_to_query = datetime.strptime(date_str, '%Y-%m-%d').date()
-            
             cur.execute("SELECT id, enrollment_no, name FROM students WHERE batch = %s ORDER BY enrollment_no", (BATCH_CODE,))
             all_students = cur.fetchall()
-            
-            cur.execute("""
-                SELECT DISTINCT ar.student_id FROM attendance_records ar
-                JOIN attendance_sessions s ON ar.session_id = s.id
-                WHERE s.class_id = %s AND DATE(s.start_time AT TIME ZONE 'UTC') = %s
-            """, (class_id, day_to_query))
+            cur.execute("SELECT DISTINCT ar.student_id FROM attendance_records ar JOIN attendance_sessions s ON ar.session_id = s.id WHERE s.class_id = %s AND DATE(s.start_time AT TIME ZONE 'UTC') = %s", (class_id, day_to_query))
             present_ids = {row['student_id'] for row in cur.fetchall()}
-            
             student_data = [{'id': s['id'], 'enrollment_no': s['enrollment_no'], 'name': s['name'], 'is_present': s['id'] in present_ids} for s in all_students]
             return jsonify({"success": True, "students": student_data})
     finally:
         if conn: conn.close()
 
-# --- NEW/UPDATED API for editing ---
 @app.route('/api/get_students_for_session/<int:session_id>')
 @controller_required
 def api_get_students_for_session(session_id):
@@ -427,41 +350,28 @@ def api_get_students_for_session(session_id):
 def api_toggle_attendance_for_day():
     data = request.get_json()
     date_str, student_id, is_present = data.get('date'), data.get('student_id'), data.get('is_present')
-    if not all([date_str, student_id is not None, isinstance(is_present, bool)]):
-        return jsonify({"success": False, "message": "Invalid data."}), 400
-    
     conn = get_db_connection()
     if not conn: return jsonify({"success": False, "message": "Database error."}), 500
     try:
         with conn.cursor() as cur:
             class_id = get_class_id_by_name(cur)
             target_date = datetime.strptime(date_str, '%Y-%m-%d').date()
-            
             cur.execute("SELECT id FROM attendance_sessions WHERE class_id = %s AND DATE(start_time AT TIME ZONE 'UTC') = %s ORDER BY start_time", (class_id, target_date))
-            session_ids_for_day = [row[0] for row in cur.fetchall()]
-            
-            if is_present: # Mark as present
-                session_to_use = None
-                if session_ids_for_day:
-                    session_to_use = session_ids_for_day[0]
-                else: # No session existed, create one
+            session_ids = [row[0] for row in cur.fetchall()]
+            if is_present:
+                session_to_use = session_ids[0] if session_ids else None
+                if not session_to_use:
                     start_of_day = datetime.combine(target_date, datetime.min.time(), tzinfo=timezone.utc)
-                    cur.execute("""
-                        INSERT INTO attendance_sessions (class_id, controller_id, session_token, start_time, end_time, is_active) 
-                        VALUES (%s, %s, %s, %s, %s, FALSE) RETURNING id
-                    """, (class_id, session['user_id'], f"manual-{secrets.token_hex(8)}", start_of_day, start_of_day))
+                    cur.execute("INSERT INTO attendance_sessions (class_id, controller_id, session_token, start_time, end_time, is_active) VALUES (%s, %s, %s, %s, %s, FALSE) RETURNING id", (class_id, session['user_id'], f"manual-{secrets.token_hex(8)}", start_of_day, start_of_day))
                     session_to_use = cur.fetchone()[0]
-                
                 cur.execute("INSERT INTO attendance_records (session_id, student_id, timestamp, ip_address) VALUES (%s, %s, NOW() AT TIME ZONE 'UTC', 'Manual Edit') ON CONFLICT (session_id, student_id) DO NOTHING", (session_to_use, student_id))
-            else: # Mark as absent
-                if session_ids_for_day:
-                    cur.execute("DELETE FROM attendance_records WHERE student_id = %s AND session_id = ANY(%s)", (student_id, session_ids_for_day))
-            
+            else:
+                if session_ids:
+                    cur.execute("DELETE FROM attendance_records WHERE student_id = %s AND session_id = ANY(%s)", (student_id, session_ids))
             conn.commit()
             return jsonify({"success": True})
     except (Exception, psycopg2.Error) as e:
-        if conn: conn.rollback()
-        print(f"Error in toggle_attendance_for_day: {e}")
+        if conn: conn.rollback(); print(f"Error: {e}")
         return jsonify({"success": False, "message": "Server error."}), 500
     finally:
         if conn: conn.close()
