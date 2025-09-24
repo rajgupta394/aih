@@ -1,6 +1,7 @@
 /**
  * Frontend logic for the AIH Attendance System.
  * Focus on a professional, mobile-first, modal-driven UX.
+ * Version with live student list and enhanced location fetching.
  */
 
 // =============================================================================
@@ -13,34 +14,53 @@ function showStatusMessage(message, type) {
     statusDiv.textContent = message;
     statusDiv.className = `status-message ${type}`;
     statusDiv.style.display = 'block';
-    setTimeout(() => { statusDiv.style.display = 'none'; }, 5000);
+    setTimeout(() => { statusDiv.style.display = 'none'; }, 6000);
 }
 
+/**
+ * UPGRADED: A more precise and user-friendly geolocation function.
+ * @param {function} successCallback Called with the final position object.
+ * @param {function} errorCallback Called with a user-friendly error message.
+ */
 function getAccurateLocation(successCallback, errorCallback) {
-    showStatusMessage('Getting location...', 'info');
+    if (!navigator.geolocation) {
+        errorCallback("Geolocation is not supported by your browser.");
+        return;
+    }
+
+    const options = {
+        enableHighAccuracy: true, // Prioritize the most accurate method.
+        timeout: 15000,           // Give the device up to 15 seconds to get a location.
+        maximumAge: 0             // Force a fresh location reading.
+    };
+
     navigator.geolocation.getCurrentPosition(
-        (pos) => {
-            if (pos.coords.accuracy < 150) {
-                successCallback(pos);
+        (position) => {
+            if (position.coords.accuracy <= 100) { // Accuracy is in meters. Lower is better.
+                successCallback(position);
             } else {
-                showStatusMessage('Improving location accuracy...', 'info');
-                const watchId = navigator.geolocation.watchPosition(
-                    (highAccPos) => {
-                        navigator.geolocation.clearWatch(watchId);
-                        successCallback(highAccPos);
-                    },
-                    (err) => {
-                        navigator.geolocation.clearWatch(watchId);
-                        errorCallback(`Could not get an accurate location: ${err.message}`);
-                    },
-                    { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
-                );
+                errorCallback(`Location found, but it's not precise enough. Please try again in a more open area.`);
             }
         },
-        (err) => { errorCallback(`Could not get location: ${err.message}`); },
-        { enableHighAccuracy: false, timeout: 5000 }
+        (error) => {
+            let errorMessage = "An unknown location error occurred.";
+            switch (error.code) {
+                case error.PERMISSION_DENIED:
+                    errorMessage = "Location access was denied. Please enable location permissions for this site.";
+                    break;
+                case error.POSITION_UNAVAILABLE:
+                    errorMessage = "Your location could not be determined. Ensure GPS and Wi-Fi are enabled.";
+                    break;
+                case error.TIMEOUT:
+                    errorMessage = "Failed to get your location in time. Please try again in an area with a stronger signal.";
+                    break;
+            }
+            errorCallback(errorMessage);
+        },
+        options
     );
 }
+
 
 function startRobustTimer(endTimeIsoString, timerElement) {
     if (!endTimeIsoString || !timerElement) return;
@@ -74,66 +94,104 @@ const debounce = (func, delay) => {
 // =============================================================================
 
 document.addEventListener('DOMContentLoaded', () => {
-    if (document.getElementById('attendance-form')) initStudentPage();
-    if (document.querySelector('.dashboard-content')) initControllerDashboard();
+    if (document.querySelector('.student-card') || document.querySelector('.live-list-container')) initStudentPage();
+    if (document.getElementById('start-session-btn') || document.querySelector('.end-session-btn')) initControllerDashboard();
     if (document.querySelector('.professional-table')) initReportPage();
 });
 
 function initStudentPage() {
     const attendanceForm = document.getElementById('attendance-form');
-    if (!attendanceForm) return;
-    
     const markButton = document.getElementById('mark-btn');
     const enrollmentInput = document.getElementById('enrollment_no');
+    const spinner = document.getElementById('button-spinner');
     
-    if (window.activeSessionDataStudent?.end_time) {
+    // NEW: Live list functionality
+    const presentListElement = document.getElementById('present-students-list');
+    let liveListInterval;
+
+    const fetchPresentStudents = async (sessionId) => {
+        if (!presentListElement) return;
+        try {
+            const response = await fetch(`/api/get_present_students/${sessionId}`);
+            const data = await response.json();
+            if (data.success && data.students) {
+                if (data.students.length > 0) {
+                    presentListElement.innerHTML = data.students.map(s => `<li>${s.name}</li>`).join('');
+                } else {
+                    presentListElement.innerHTML = '<li>No one has marked attendance yet.</li>';
+                }
+            }
+        } catch (error) {
+            console.error("Could not fetch present students:", error);
+        }
+    };
+
+    if (window.activeSessionDataStudent?.id) {
+        const sessionId = window.activeSessionDataStudent.id;
         const timerElement = document.getElementById('timer-student');
         startRobustTimer(window.activeSessionDataStudent.end_time, timerElement);
+        
+        // Fetch the list immediately, then start polling every 10 seconds
+        fetchPresentStudents(sessionId);
+        liveListInterval = setInterval(() => fetchPresentStudents(sessionId), 10000);
     }
     
-    enrollmentInput.addEventListener('input', debounce(async () => {
-        const studentNameDisplay = document.getElementById('student-name-display');
-        const enrollmentNo = enrollmentInput.value.trim();
-        if (enrollmentNo.length >= 5) {
-            const response = await fetch(`/api/get_student_name/${enrollmentNo}`);
-            const data = await response.json();
-            studentNameDisplay.textContent = data.name ? `Name: ${data.name}` : 'Student not found.';
-            studentNameDisplay.style.color = data.name ? 'var(--primary-blue)' : 'var(--danger-red)';
-        } else {
-            studentNameDisplay.textContent = '';
-        }
-    }, 300));
-
-    attendanceForm.addEventListener('submit', (e) => {
-        e.preventDefault();
-        markButton.disabled = true;
-        markButton.textContent = 'Verifying...';
-        getAccurateLocation(
-            async (position) => {
-                markButton.textContent = 'Submitting...';
-                const formData = new URLSearchParams({
-                    enrollment_no: enrollmentInput.value,
-                    session_id: window.activeSessionDataStudent.id,
-                    latitude: position.coords.latitude,
-                    longitude: position.coords.longitude,
-                });
-                const response = await fetch('/api/mark_attendance', { method: 'POST', body: formData });
-                const result = await response.json();
-                showStatusMessage(result.message, result.category);
-                if (result.success) {
-                    attendanceForm.style.display = 'none';
-                } else {
-                    markButton.disabled = false;
-                    markButton.textContent = 'Mark My Attendance';
-                }
-            },
-            (error) => {
-                showStatusMessage(error, 'error');
-                markButton.disabled = false;
-                markButton.textContent = 'Mark My Attendance';
+    if (attendanceForm) {
+        enrollmentInput.addEventListener('input', debounce(async () => {
+            const studentNameDisplay = document.getElementById('student-name-display');
+            const enrollmentNo = enrollmentInput.value.trim();
+            if (enrollmentNo.length >= 5) {
+                const response = await fetch(`/api/get_student_name/${enrollmentNo}`);
+                const data = await response.json();
+                studentNameDisplay.textContent = data.name ? `Name: ${data.name}` : 'Student not found.';
+                studentNameDisplay.style.color = data.name ? 'var(--primary-blue)' : 'var(--danger-red)';
+            } else {
+                studentNameDisplay.textContent = '';
             }
-        );
-    });
+        }, 300));
+
+        attendanceForm.addEventListener('submit', (e) => {
+            e.preventDefault();
+            markButton.disabled = true;
+            spinner.style.display = 'inline-block';
+            markButton.querySelector('span').textContent = 'Getting Location...';
+            document.getElementById('troubleshooting-tips').style.display = 'none';
+
+            getAccurateLocation(
+                async (position) => {
+                    markButton.querySelector('span').textContent = 'Submitting...';
+                    const formData = new URLSearchParams({
+                        enrollment_no: enrollmentInput.value,
+                        session_id: window.activeSessionDataStudent.id,
+                        latitude: position.coords.latitude,
+                        longitude: position.coords.longitude,
+                    });
+                    const response = await fetch('/api/mark_attendance', { method: 'POST', body: formData });
+                    const result = await response.json();
+                    showStatusMessage(result.message, result.category);
+
+                    if (result.success) {
+                        attendanceForm.style.display = 'none';
+                        fetchPresentStudents(window.activeSessionDataStudent.id);
+                    } else {
+                        markButton.disabled = false;
+                        spinner.style.display = 'none';
+                        markButton.querySelector('span').textContent = 'Mark My Attendance';
+                        if (result.message.includes("away")) {
+                            document.getElementById('troubleshooting-tips').style.display = 'block';
+                        }
+                    }
+                },
+                (error) => {
+                    showStatusMessage(error, 'error');
+                    markButton.disabled = false;
+                    spinner.style.display = 'none';
+                    markButton.querySelector('span').textContent = 'Mark My Attendance';
+                    document.getElementById('troubleshooting-tips').style.display = 'block';
+                }
+            );
+        });
+    }
 }
 
 function initControllerDashboard() {
@@ -196,7 +254,6 @@ function initControllerDashboard() {
 }
 
 function initReportPage() {
-    // Edit day functionality
     document.querySelectorAll('.edit-day-btn').forEach(button => {
         button.addEventListener('click', (e) => {
             const date = e.target.dataset.date;
@@ -210,7 +267,6 @@ function initReportPage() {
         });
     });
 
-    // Delete day functionality
     const deleteModal = document.getElementById('confirm-delete-modal');
     const confirmDeleteBtn = document.getElementById('confirm-delete-btn');
     const deleteDateDisplay = document.getElementById('modal-delete-date-display');
@@ -220,62 +276,57 @@ function initReportPage() {
         button.addEventListener('click', (e) => {
             dateToDelete = e.target.dataset.date;
             deleteDateDisplay.textContent = dateToDelete;
-            deleteModal.style.display = 'block';
-            document.body.classList.add('modal-open');
+            openModal(deleteModal);
         });
     });
 
-    confirmDeleteBtn.addEventListener('click', async () => {
-        if (!dateToDelete) return;
-        confirmDeleteBtn.disabled = true;
-        const response = await fetch(`/api/delete_day/${dateToDelete}`, { method: 'DELETE' });
-        const result = await response.json();
-        showStatusMessage(result.message, result.success ? 'success' : 'error');
-        if (result.success) {
-            document.getElementById(`row-${dateToDelete}`).remove();
-        }
-        closeModal(deleteModal);
-        confirmDeleteBtn.disabled = false;
-    });
-
-    deleteModal.querySelectorAll('.close-btn').forEach(btn => btn.addEventListener('click', () => closeModal(deleteModal)));
-}
-
-
-// =============================================================================
-// === MODAL MANAGER (REUSABLE LOGIC) ==========================================
-// =============================================================================
-
-const managerModal = document.getElementById('manager-modal');
-const modalTitle = document.getElementById('modal-title');
-const modalSubtitle = document.getElementById('modal-subtitle');
-const studentListContainer = document.getElementById('student-list-container');
-const searchInput = document.getElementById('student-search-input');
-
-async function setupManagerModal(config) {
-    modalTitle.textContent = config.title;
-    modalSubtitle.textContent = config.subtitle;
-    studentListContainer.innerHTML = '<p style="text-align:center;">Loading students...</p>';
-    openModal(managerModal);
-    
-    const response = await fetch(config.fetchUrl);
-    const data = await response.json();
-
-    if (data.success) {
-        renderStudentList(data.students, config);
-        searchInput.oninput = () => renderStudentList(data.students.filter(s => 
-            s.name.toLowerCase().includes(searchInput.value.toLowerCase()) || 
-            s.enrollment_no.toLowerCase().includes(searchInput.value.toLowerCase())
-        ), config);
-    } else {
-        studentListContainer.innerHTML = `<p class="error">${data.message}</p>`;
+    if(confirmDeleteBtn) {
+        confirmDeleteBtn.addEventListener('click', async () => {
+            if (!dateToDelete) return;
+            confirmDeleteBtn.disabled = true;
+            const response = await fetch(`/api/delete_day/${dateToDelete}`, { method: 'DELETE' });
+            const result = await response.json();
+            showStatusMessage(result.message, result.success ? 'success' : 'error');
+            if (result.success) {
+                document.getElementById(`row-${dateToDelete}`).remove();
+            }
+            closeModal(deleteModal);
+            confirmDeleteBtn.disabled = false;
+        });
     }
 }
 
-function renderStudentList(students, config) {
-    studentListContainer.innerHTML = '';
+function setupManagerModal(config) {
+    const managerModal = document.getElementById('manager-modal');
+    const studentListContainer = document.getElementById('student-list-container');
+    const searchInput = document.getElementById('student-search-input');
+    if(!managerModal) return;
+    managerModal.querySelector('#modal-title').textContent = config.title;
+    managerModal.querySelector('#modal-subtitle').textContent = config.subtitle;
+    studentListContainer.innerHTML = '<p style="text-align:center;">Loading students...</p>';
+    openModal(managerModal);
+    
+    fetch(config.fetchUrl)
+        .then(res => res.json())
+        .then(data => {
+            if (data.success) {
+                renderStudentList(data.students, config, studentListContainer);
+                if(searchInput) {
+                    searchInput.oninput = () => renderStudentList(data.students.filter(s => 
+                        s.name.toLowerCase().includes(searchInput.value.toLowerCase()) || 
+                        s.enrollment_no.toLowerCase().includes(searchInput.value.toLowerCase())
+                    ), config, studentListContainer);
+                }
+            } else {
+                studentListContainer.innerHTML = `<p class="error">${data.message}</p>`;
+            }
+        });
+}
+
+function renderStudentList(students, config, container) {
+    container.innerHTML = '';
     if (students.length === 0) {
-        studentListContainer.innerHTML = '<p style="text-align:center;">No students match your search.</p>';
+        container.innerHTML = '<p style="text-align:center;">No students match your search.</p>';
         return;
     }
     students.forEach(student => {
@@ -290,26 +341,22 @@ function renderStudentList(students, config) {
                 ${student.is_present ? 'Mark Absent' : 'Mark Present'}
             </button>
         `;
-        studentListContainer.appendChild(item);
+        container.appendChild(item);
     });
 
-    studentListContainer.querySelectorAll('.attendance-toggle-btn').forEach(btn => {
+    container.querySelectorAll('.attendance-toggle-btn').forEach(btn => {
         btn.addEventListener('click', async (e) => {
-            const button = e.target;
+            const button = e.target.closest('button');
             const studentId = button.dataset.studentId;
             const isCurrentlyPresent = button.classList.contains('is-present');
-            
-            button.disabled = true; // Prevent double-clicks
-            
+            button.disabled = true;
             const response = await fetch(config.apiUrl, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ ...config.payload, student_id: studentId, is_present: !isCurrentlyPresent })
             });
-
             const result = await response.json();
             if (result.success) {
-                // Toggle state visually
                 button.classList.toggle('is-present');
                 button.classList.toggle('is-absent');
                 button.textContent = isCurrentlyPresent ? 'Mark Present' : 'Mark Absent';
@@ -321,7 +368,6 @@ function renderStudentList(students, config) {
     });
 }
 
-// Generic modal open/close functions
 function openModal(modalElement) {
     if (modalElement) {
         modalElement.style.display = 'block';
@@ -336,12 +382,12 @@ function closeModal(modalElement) {
     }
 }
 
-// Add event listeners to all close buttons in all modals
 document.querySelectorAll('.modal').forEach(modal => {
     modal.addEventListener('click', (e) => {
-        if (e.target === modal) closeModal(modal); // Close if clicking on backdrop
+        if (e.target === modal) closeModal(modal);
     });
     modal.querySelectorAll('.close-btn').forEach(btn => {
         btn.addEventListener('click', () => closeModal(modal));
     });
 });
+

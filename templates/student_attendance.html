@@ -6,7 +6,6 @@
     <title>Mark {{ class_name }} Attendance</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
     <style>
-        /* Additional styles for the new student UI */
         .status-indicator {
             padding: 0.75rem 1.5rem;
             border-radius: var(--border-radius);
@@ -32,24 +31,32 @@
             border-radius: var(--border-radius);
             text-align: center;
         }
-        .student-card h3 {
-            margin-top: 0;
-            color: var(--text-color);
-        }
-        .live-count {
+        .live-list-container {
             margin-top: 2rem;
+            background-color: #374151;
+            padding: 1.5rem;
+            border-radius: var(--border-radius);
+        }
+        .live-list-container h3 {
+            margin-top: 0;
+            color: var(--primary-blue);
             text-align: center;
         }
-        .live-count-number {
-            font-size: 3em;
-            font-weight: 700;
-            color: var(--primary-blue);
+        #present-students-list {
+            list-style-type: none;
+            padding: 0;
+            margin-top: 1rem;
+            column-count: 2;
+            column-gap: 1rem;
         }
-        .live-count-label {
-            color: var(--text-muted);
-            font-weight: 500;
+        #present-students-list li {
+            background-color: #4b5563;
+            padding: 0.75rem;
+            margin-bottom: 0.5rem;
+            border-radius: var(--border-radius);
+            color: var(--text-color);
+            font-size: 0.95em;
         }
-        /* Style for the updated footer */
         .custom-footer {
             text-align: center;
             margin-top: 2.5rem;
@@ -58,6 +65,29 @@
             color: var(--text-muted);
             font-size: 0.9em;
             font-weight: 500;
+        }
+        .spinner {
+            display: none;
+            width: 20px;
+            height: 20px;
+            border: 3px solid rgba(255,255,255,0.3);
+            border-radius: 50%;
+            border-top-color: #fff;
+            animation: spin 1s ease-in-out infinite;
+            margin-right: 10px;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        .button .content {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        @media (max-width: 600px) {
+            #present-students-list {
+                column-count: 1;
+            }
         }
     </style>
 </head>
@@ -72,10 +102,7 @@
 
         <div class="dashboard-content">
             {% if active_session %}
-                <!-- State 1: Session is currently active -->
-                <div class="status-indicator status-active">
-                    Session is Active
-                </div>
+                <div class="status-indicator status-active">Session is Active</div>
                 <div class="student-card">
                     <h3>Time Remaining: <span id="timer-student" class="timer-display"></span></h3>
                     <form id="attendance-form">
@@ -84,36 +111,55 @@
                             <input type="text" id="enrollment_no" name="enrollment_no" required placeholder="e.g., Y24120127" autocomplete="off" style="text-transform: uppercase; text-align:center; font-size: 1.2em; padding: 0.8rem;">
                             <div id="student-name-display" class="student-name-display"></div>
                         </div>
-                        <button type="submit" id="mark-btn" class="button" style="width: 100%; padding: 1rem;">Mark My Attendance</button>
+                        <button type="submit" id="mark-btn" class="button" style="width: 100%; padding: 1rem;">
+                            <div class="content">
+                                <div id="button-spinner" class="spinner"></div>
+                                <span>Mark My Attendance</span>
+                            </div>
+                        </button>
                     </form>
                 </div>
-
-            {% elif present_students %}
-                <!-- State 2: Session is over, show final count for the day -->
-                <div class="status-indicator status-inactive">
-                    Session is Inactive
-                </div>
-                <div class="live-count">
-                    <div class="live-count-number">{{ present_students | length }}</div>
-                    <div class="live-count-label">Students Present Today</div>
-                    <p style="color: var(--text-muted); margin-top: 1rem;">Your attendance for today has been recorded.</p>
+                
+                <div class="live-list-container">
+                    <h3>Students Present Today</h3>
+                    <ul id="present-students-list">
+                        <li>Loading...</li>
+                    </ul>
                 </div>
 
             {% else %}
-                 <!-- State 3: No session active and none have run today -->
-                <div class="status-indicator status-inactive">
-                    Session is Inactive
-                </div>
+                <div class="status-indicator status-inactive">Session is Inactive</div>
                 <div class="info-message" style="background-color: transparent; border: 1px solid var(--border-color);">
-                    There is no active attendance session right now.
+                    {% if present_students %}
+                        Attendance for today is complete.
+                    {% else %}
+                        There is no active attendance session right now.
+                    {% endif %}
                 </div>
+                {% if present_students %}
+                <div class="live-list-container">
+                    <h3>Final List for Today</h3>
+                    <ul id="present-students-list">
+                        {% for student in present_students %}
+                            <li>{{ student.name }}</li>
+                        {% endfor %}
+                    </ul>
+                </div>
+                {% endif %}
             {% endif %}
+
+            <div id="troubleshooting-tips" class="section-card" style="display: none; margin-top: 2rem; background-color: var(--input-bg); padding: 1.5rem; border-radius: var(--border-radius);">
+                <h3 style="margin-top:0; color:var(--primary-blue);">Location Troubleshooting</h3>
+                <ul style="text-align: left; padding-left: 20px; color: var(--text-color);">
+                    <li><strong>Enable Permissions:</strong> Make sure you have granted location permissions to your browser for this site.</li>
+                    <li><strong>Enable Wi-Fi:</strong> Turning on Wi-Fi, even if not connected, dramatically improves location accuracy indoors.</li>
+                    <li><strong>Move Closer to a Window:</strong> A clearer view of the sky helps with GPS signals.</li>
+                    <li><strong>Restart Browser:</strong> Sometimes a simple restart of your mobile browser can fix issues.</li>
+                </ul>
+            </div>
         </div>
         
-        <!-- UPDATED FOOTER -->
-        <footer class="custom-footer">
-            Mark My Attendance (by Ritik)
-        </footer>
+        <footer class="custom-footer">Mark My Attendance (by Ritik)</footer>
     </div>
     <script>
         window.activeSessionDataStudent = {{ active_session | tojson | safe }};

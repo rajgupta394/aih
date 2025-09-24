@@ -129,7 +129,7 @@ def student_page():
                         cur.execute("""
                             SELECT DISTINCT s.name, s.enrollment_no FROM attendance_records ar
                             JOIN students s ON ar.student_id = s.id JOIN attendance_sessions ases ON ar.session_id = ases.id
-                            WHERE ases.class_id = %s AND DATE(ases.start_time AT TIME ZONE 'UTC') = %s ORDER BY s.enrollment_no ASC
+                            WHERE ases.class_id = %s AND DATE(ases.start_time AT TIME ZONE 'UTC') = %s ORDER BY s.name ASC
                         """, (class_id, today_utc))
                         present_students = cur.fetchall()
         finally:
@@ -249,6 +249,30 @@ def export_csv():
 
 
 # --- API Endpoints ---
+
+# NEW/UPDATED API Endpoint for live student list
+@app.route('/api/get_present_students/<int:session_id>')
+def api_get_present_students(session_id):
+    conn = get_db_connection()
+    if not conn: 
+        return jsonify({"success": False, "students": []})
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+            cur.execute("""
+                SELECT s.name, s.enrollment_no 
+                FROM attendance_records ar
+                JOIN students s ON ar.student_id = s.id
+                WHERE ar.session_id = %s 
+                ORDER BY s.name ASC
+            """, (session_id,))
+            students = [dict(row) for row in cur.fetchall()]
+            return jsonify({"success": True, "students": students})
+    except (Exception, psycopg2.Error) as e:
+        print(f"Error in get_present_students: {e}")
+        return jsonify({"success": False, "students": []})
+    finally:
+        if conn: conn.close()
+
 @app.route('/api/mark_attendance', methods=['POST'])
 def api_mark_attendance():
     data = request.form
@@ -262,7 +286,6 @@ def api_mark_attendance():
             student = cur.fetchone()
             if not student: return jsonify({"success": False, "message": "Enrollment number not found.", "category": "danger"}), 404
 
-            # FIXED: Specify which 'id' to select to avoid ambiguity. Using ar.id.
             cur.execute("SELECT ar.id FROM attendance_records ar JOIN attendance_sessions ases ON ar.session_id = ases.id WHERE ar.student_id = %s AND DATE(ases.start_time AT TIME ZONE 'UTC') = %s", (student['id'], datetime.now(timezone.utc).date()))
             if cur.fetchone():
                 return jsonify({"success": False, "message": "You have already marked attendance today.", "category": "warning"}), 409
@@ -444,3 +467,4 @@ if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     debug = os.environ.get('FLASK_DEBUG', 'False').lower() in ['true', '1', 't']
     app.run(host='0.0.0.0', port=port, debug=debug)
+
