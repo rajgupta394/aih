@@ -48,7 +48,7 @@ def controller_required(f):
         return f(*args, **kwargs)
     return decorated_function
 
-# --- Helper Functions (FIXED) ---
+# --- Helper Functions ---
 def haversine_distance(lat1, lon1, lat2, lon2):
     R = 6371000
     phi1, phi2 = math.radians(lat1), math.radians(lat2)
@@ -56,16 +56,12 @@ def haversine_distance(lat1, lon1, lat2, lon2):
     a = math.sin(delta_phi / 2)**2 + math.cos(phi1) * math.cos(phi2) * math.sin(delta_lambda / 2)**2
     return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
-# FIXED: Function now correctly accepts the cursor as an argument.
 def get_class_id_by_name(cursor):
-    # This must match the class name in your database_setup.sql for the student list
     cursor.execute("SELECT id FROM classes WHERE class_name = 'BA - Anthropology'")
     result = cursor.fetchone()
     return result[0] if result else None
 
-# FIXED: Function now correctly accepts the cursor as an argument.
 def get_controller_id_by_username(cursor):
-    # This must match the username in your database_setup.sql
     cursor.execute("SELECT id FROM users WHERE username = 'controller'")
     result = cursor.fetchone()
     return result[0] if result else None
@@ -88,7 +84,6 @@ def login():
         try:
             with conn.cursor() as cur:
                 if username == CONTROLLER_USERNAME and password == CONTROLLER_PASSWORD:
-                    # FIXED: Pass the cursor to the helper function
                     controller_id = get_controller_id_by_username(cur)
                     if controller_id:
                         session.clear()
@@ -119,7 +114,6 @@ def student_page():
     if conn:
         try:
             with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
-                # FIXED: Pass the cursor to the helper function
                 class_id = get_class_id_by_name(cur)
                 if class_id:
                     cur.execute("""
@@ -150,7 +144,6 @@ def controller_dashboard():
     if conn:
         try:
             with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
-                # FIXED: Pass the cursor to the helper function
                 class_id = get_class_id_by_name(cur)
                 if class_id:
                     cur.execute("SELECT id, end_time FROM attendance_sessions WHERE class_id = %s AND is_active = TRUE AND end_time > NOW() AT TIME ZONE 'UTC' LIMIT 1", (class_id,))
@@ -172,7 +165,6 @@ def attendance_report():
     report_data, students = [], []
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
-            # FIXED: Pass the cursor to the helper function
             class_id = get_class_id_by_name(cur)
             cur.execute("SELECT id, name, enrollment_no FROM students WHERE batch = %s ORDER BY enrollment_no", (BATCH_CODE,))
             students = cur.fetchall()
@@ -201,7 +193,6 @@ def export_csv():
         return redirect(url_for('attendance_report'))
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
-            # FIXED: Pass the cursor to the helper function
             class_id = get_class_id_by_name(cur)
             
             cur.execute("SELECT MIN(start_time AT TIME ZONE 'UTC') as first_date FROM attendance_sessions WHERE class_id = %s", (class_id,))
@@ -271,7 +262,8 @@ def api_mark_attendance():
             student = cur.fetchone()
             if not student: return jsonify({"success": False, "message": "Enrollment number not found.", "category": "danger"}), 404
 
-            cur.execute("SELECT id FROM attendance_records ar JOIN attendance_sessions ases ON ar.session_id = ases.id WHERE ar.student_id = %s AND DATE(ases.start_time AT TIME ZONE 'UTC') = %s", (student['id'], datetime.now(timezone.utc).date()))
+            # FIXED: Specify which 'id' to select to avoid ambiguity. Using ar.id.
+            cur.execute("SELECT ar.id FROM attendance_records ar JOIN attendance_sessions ases ON ar.session_id = ases.id WHERE ar.student_id = %s AND DATE(ases.start_time AT TIME ZONE 'UTC') = %s", (student['id'], datetime.now(timezone.utc).date()))
             if cur.fetchone():
                 return jsonify({"success": False, "message": "You have already marked attendance today.", "category": "warning"}), 409
 
@@ -304,7 +296,6 @@ def api_start_session():
     if not conn: return jsonify({"success": False, "message": "Database error."}), 503
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
-            # FIXED: Pass the cursor to the helper function
             class_id = get_class_id_by_name(cur)
             cur.execute("SELECT id FROM attendance_sessions WHERE class_id = %s AND is_active = TRUE AND end_time > NOW() AT TIME ZONE 'UTC'", (class_id,))
             if cur.fetchone():
@@ -348,7 +339,6 @@ def api_get_students_for_day(date_str):
     if not conn: return jsonify({"success": False, "message": "Database error."}), 500
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
-            # FIXED: Pass the cursor to the helper function
             class_id = get_class_id_by_name(cur)
             day_to_query = datetime.strptime(date_str, '%Y-%m-%d').date()
             cur.execute("SELECT id, enrollment_no, name FROM students WHERE batch = %s ORDER BY enrollment_no", (BATCH_CODE,))
@@ -385,7 +375,6 @@ def api_toggle_attendance_for_day():
     if not conn: return jsonify({"success": False, "message": "Database error."}), 500
     try:
         with conn.cursor() as cur:
-            # FIXED: Pass the cursor to the helper function
             class_id = get_class_id_by_name(cur)
             target_date = datetime.strptime(date_str, '%Y-%m-%d').date()
             cur.execute("SELECT id FROM attendance_sessions WHERE class_id = %s AND DATE(start_time AT TIME ZONE 'UTC') = %s ORDER BY start_time", (class_id, target_date))
@@ -436,7 +425,6 @@ def api_delete_day(date_str):
     if not conn: return jsonify({"success": False, "message": "Database error."}), 503
     try:
         with conn.cursor() as cur:
-            # FIXED: Pass the cursor to the helper function
             class_id = get_class_id_by_name(cur)
             target_date = datetime.strptime(date_str, '%Y-%m-%d').date()
             cur.execute("SELECT id FROM attendance_sessions WHERE class_id = %s AND DATE(start_time AT TIME ZONE 'UTC') = %s", (class_id, target_date))
@@ -456,4 +444,3 @@ if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     debug = os.environ.get('FLASK_DEBUG', 'False').lower() in ['true', '1', 't']
     app.run(host='0.0.0.0', port=port, debug=debug)
-
