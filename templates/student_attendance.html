@@ -6,89 +6,19 @@
     <title>Mark {{ class_name }} Attendance</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
     <style>
-        .status-indicator {
-            padding: 0.75rem 1.5rem;
-            border-radius: var(--border-radius);
-            font-weight: 600;
-            text-align: center;
-            margin-bottom: 2rem;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-            font-size: 1.1em;
-        }
-        .status-active {
-            background-color: var(--success-bg);
-            color: var(--success-text);
-            box-shadow: 0 0 15px rgba(16, 185, 129, 0.5);
-        }
-        .status-inactive {
-            background-color: var(--secondary-gray-dark);
-            color: var(--text-muted);
-        }
-        .student-card {
-            background-color: #4b5563;
-            padding: 2rem;
-            border-radius: var(--border-radius);
-            text-align: center;
-        }
-        .live-list-container {
-            margin-top: 2rem;
-            background-color: #374151;
-            padding: 1.5rem;
-            border-radius: var(--border-radius);
-        }
-        .live-list-container h3 {
-            margin-top: 0;
-            color: var(--primary-blue);
-            text-align: center;
-        }
-        #present-students-list {
-            list-style-type: none;
-            padding: 0;
-            margin-top: 1rem;
-            column-count: 2;
-            column-gap: 1rem;
-        }
-        #present-students-list li {
-            background-color: #4b5563;
-            padding: 0.75rem;
-            margin-bottom: 0.5rem;
-            border-radius: var(--border-radius);
-            color: var(--text-color);
-            font-size: 0.95em;
-        }
-        .custom-footer {
-            text-align: center;
-            margin-top: 2.5rem;
-            padding-top: 1.5rem;
-            border-top: 1px solid var(--border-color);
-            color: var(--text-muted);
-            font-size: 0.9em;
-            font-weight: 500;
-        }
-        .spinner {
-            display: none;
-            width: 20px;
-            height: 20px;
-            border: 3px solid rgba(255,255,255,0.3);
-            border-radius: 50%;
-            border-top-color: #fff;
-            animation: spin 1s ease-in-out infinite;
-            margin-right: 10px;
-        }
-        @keyframes spin {
-            to { transform: rotate(360deg); }
-        }
-        .button .content {
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
-        @media (max-width: 600px) {
-            #present-students-list {
-                column-count: 1;
-            }
-        }
+        .status-indicator { padding: 0.75rem 1.5rem; border-radius: var(--border-radius); font-weight: 600; text-align: center; margin-bottom: 2rem; text-transform: uppercase; letter-spacing: 1px; font-size: 1.1em; }
+        .status-active { background-color: var(--success-bg); color: var(--success-text); box-shadow: 0 0 15px rgba(16, 185, 129, 0.5); }
+        .status-inactive { background-color: var(--secondary-gray-dark); color: var(--text-muted); }
+        .student-card { background-color: #4b5563; padding: 2rem; border-radius: var(--border-radius); text-align: center; }
+        .live-list-container { margin-top: 2rem; background-color: #374151; padding: 1.5rem; border-radius: var(--border-radius); }
+        .live-list-container h3 { margin-top: 0; color: var(--primary-blue); text-align: center; }
+        #present-students-list { list-style-type: none; padding: 0; margin-top: 1rem; column-count: 2; column-gap: 1rem; }
+        #present-students-list li { background-color: #4b5563; padding: 0.75rem; margin-bottom: 0.5rem; border-radius: var(--border-radius); color: var(--text-color); font-size: 0.95em; }
+        .custom-footer { text-align: center; margin-top: 2.5rem; padding-top: 1.5rem; border-top: 1px solid var(--border-color); color: var(--text-muted); font-size: 0.9em; font-weight: 500; }
+        .spinner { display: none; width: 20px; height: 20px; border: 3px solid rgba(255,255,255,0.3); border-radius: 50%; border-top-color: #fff; animation: spin 1s ease-in-out infinite; margin-right: 10px; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .button .content { display: flex; align-items: center; justify-content: center; }
+        @media (max-width: 600px) { #present-students-list { column-count: 1; } }
     </style>
 </head>
 <body>
@@ -151,9 +81,8 @@
             <div id="troubleshooting-tips" class="section-card" style="display: none; margin-top: 2rem; background-color: var(--input-bg); padding: 1.5rem; border-radius: var(--border-radius);">
                 <h3 style="margin-top:0; color:var(--primary-blue);">Location Troubleshooting</h3>
                 <ul style="text-align: left; padding-left: 20px; color: var(--text-color);">
-                    <li><strong>Enable Permissions:</strong> Make sure you have granted location permissions to your browser for this site.</li>
-                    <li><strong>Enable Wi-Fi:</strong> Turning on Wi-Fi, even if not connected, dramatically improves location accuracy indoors.</li>
-                    <li><strong>Move Closer to a Window:</strong> A clearer view of the sky helps with GPS signals.</li>
+                    <li><strong>Enable Location:</strong> This is the most important step for an accurate indoor location.</li>
+                    <li><strong>Check Internet Connection:</strong> A stable connection is required for this service.</li>
                     <li><strong>Restart Browser:</strong> Sometimes a simple restart of your mobile browser can fix issues.</li>
                 </ul>
             </div>
@@ -162,9 +91,10 @@
         <footer class="custom-footer">Mark My Attendance (by Ritik)</footer>
     </div>
     <script>
+        // API Key has been inserted below
+        window.GOOGLE_MAPS_API_KEY = "AIzaSyCUX3zDTXuz-01Vn2zVokyW-LA1jbnk2mM"; 
         window.activeSessionDataStudent = {{ active_session | tojson | safe }};
     </script>
     <script src="{{ url_for('static', filename='main.js') }}"></script>
 </body>
 </html>
-

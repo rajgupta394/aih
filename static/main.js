@@ -22,43 +22,44 @@ function showStatusMessage(message, type) {
  * @param {function} successCallback Called with the final position object.
  * @param {function} errorCallback Called with a user-friendly error message.
  */
-function getAccurateLocation(successCallback, errorCallback) {
-    if (!navigator.geolocation) {
-        errorCallback("Geolocation is not supported by your browser.");
+async function getAccurateLocation(successCallback, errorCallback) {
+    const apiKey = window.GOOGLE_MAPS_API_KEY;
+    if (!apiKey) {
+        errorCallback("Google Maps API key is missing.");
         return;
     }
 
-    const options = {
-        enableHighAccuracy: true, // Prioritize the most accurate method.
-        timeout: 15000,           // Give the device up to 15 seconds to get a location.
-        maximumAge: 0             // Force a fresh location reading.
-    };
+    try {
+        const response = await fetch(`https://www.googleapis.com/geolocation/v1/geolocate?key=${apiKey}`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({}) // Sending an empty body for automatic location detection
+        });
 
-    navigator.geolocation.getCurrentPosition(
-        (position) => {
-            if (position.coords.accuracy <= 100) { // Accuracy is in meters. Lower is better.
-                successCallback(position);
-            } else {
-                errorCallback(`Location found, but it's not precise enough. Please try again in a more open area.`);
-            }
-        },
-        (error) => {
-            let errorMessage = "An unknown location error occurred.";
-            switch (error.code) {
-                case error.PERMISSION_DENIED:
-                    errorMessage = "Location access was denied. Please enable location permissions for this site.";
-                    break;
-                case error.POSITION_UNAVAILABLE:
-                    errorMessage = "Your location could not be determined. Ensure GPS and Wi-Fi are enabled.";
-                    break;
-                case error.TIMEOUT:
-                    errorMessage = "Failed to get your location in time. Please try again in an area with a stronger signal.";
-                    break;
-            }
+        const data = await response.json();
+
+        if (response.ok) {
+            const position = {
+                coords: {
+                    latitude: data.location.lat,
+                    longitude: data.location.lng,
+                    accuracy: data.accuracy // Use accuracy from API response
+                }
+            };
+            // Log location for debugging
+            console.log("Location obtained from Google Maps API:", position.coords);
+            successCallback(position);
+        } else {
+            // Handle API-specific errors
+            const errorMessage = data.error?.message || "An unknown error occurred with the Geolocation API.";
             errorCallback(errorMessage);
-        },
-        options
-    );
+        }
+    } catch (error) {
+        // Handle network or fetch errors
+        errorCallback("A network error occurred. Check your internet connection.");
+    }
 }
 
 
@@ -390,4 +391,3 @@ document.querySelectorAll('.modal').forEach(modal => {
         btn.addEventListener('click', () => closeModal(modal));
     });
 });
-
