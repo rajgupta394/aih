@@ -18,11 +18,50 @@ function showStatusMessage(message, type) {
 }
 
 /**
- * UPGRADED: A more precise and user-friendly geolocation function.
+ * NEW: Hybrid Geolocation Strategy.
+ * Prioritizes HTML5 Geolocation (for GPS) and falls back to Google Geolocation API.
  * @param {function} successCallback Called with the final position object.
  * @param {function} errorCallback Called with a user-friendly error message.
  */
-async function getAccurateLocation(successCallback, errorCallback) {
+function getAccurateLocation(successCallback, errorCallback) {
+    // 1. Prioritize HTML5 Geolocation for GPS
+    if (navigator.geolocation) {
+        const options = {
+            enableHighAccuracy: true,
+            timeout: 10000,
+            maximumAge: 0
+        };
+
+        navigator.geolocation.getCurrentPosition(
+            (position) => {
+                // Check for a high-accuracy result (typically GPS)
+                if (position.coords.accuracy && position.coords.accuracy <= 50) {
+                    console.log("Using high-accuracy HTML5 location (GPS).");
+                    successCallback(position);
+                } else {
+                    console.log("HTML5 location not precise enough. Falling back to Google Geolocation API.");
+                    fallbackToGoogleGeolocation(successCallback, errorCallback);
+                }
+            },
+            (error) => {
+                let errorMessage = "HTML5 Geolocation failed. Falling back to Google Geolocation API.";
+                if (error.code === error.PERMISSION_DENIED) {
+                    errorMessage = "Location access was denied. Please enable permissions and try again.";
+                    errorCallback(errorMessage);
+                    return; // Do not fallback if permission is denied
+                }
+                console.log(errorMessage);
+                fallbackToGoogleGeolocation(successCallback, errorCallback);
+            },
+            options
+        );
+    } else {
+        console.log("HTML5 Geolocation not supported. Falling back to Google Geolocation API.");
+        fallbackToGoogleGeolocation(successCallback, errorCallback);
+    }
+}
+
+async function fallbackToGoogleGeolocation(successCallback, errorCallback) {
     const apiKey = window.GOOGLE_MAPS_API_KEY;
     if (!apiKey) {
         errorCallback("Google Maps API key is missing.");
@@ -32,10 +71,8 @@ async function getAccurateLocation(successCallback, errorCallback) {
     try {
         const response = await fetch(`https://www.googleapis.com/geolocation/v1/geolocate?key=${apiKey}`, {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({}) // Sending an empty body for automatic location detection
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({})
         });
 
         const data = await response.json();
@@ -45,23 +82,19 @@ async function getAccurateLocation(successCallback, errorCallback) {
                 coords: {
                     latitude: data.location.lat,
                     longitude: data.location.lng,
-                    accuracy: data.accuracy // Use accuracy from API response
+                    accuracy: data.accuracy
                 }
             };
-            // Log location for debugging
-            console.log("Location obtained from Google Maps API:", position.coords);
+            console.log("Using Google Geolocation API location.");
             successCallback(position);
         } else {
-            // Handle API-specific errors
             const errorMessage = data.error?.message || "An unknown error occurred with the Geolocation API.";
             errorCallback(errorMessage);
         }
     } catch (error) {
-        // Handle network or fetch errors
         errorCallback("A network error occurred. Check your internet connection.");
     }
 }
-
 
 function startRobustTimer(endTimeIsoString, timerElement) {
     if (!endTimeIsoString || !timerElement) return;
