@@ -57,6 +57,8 @@
 
     <script>
         window.activeSessionData = {{ active_session | tojson | default('null') }};
+        // Add the Google Maps API key here
+        window.GOOGLE_MAPS_API_KEY = "AIzaSyCUX3zDTXuz-01Vn2zVokyW-LA1jbnk2mM"; 
     </script>
     <script src="{{ url_for('static', filename='main.js') }}"></script>
 </body>
