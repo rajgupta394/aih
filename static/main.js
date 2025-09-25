@@ -1,7 +1,6 @@
 /**
  * Frontend logic for the AIH Attendance System.
- * Focus on a professional, mobile-first, modal-driven UX.
- * Version with live student list and enhanced location fetching.
+ * Version with a two-step ("waterfall") location system for maximum reliability.
  */
 
 // =============================================================================
@@ -17,84 +16,61 @@ function showStatusMessage(message, type) {
     setTimeout(() => { statusDiv.style.display = 'none'; }, 6000);
 }
 
-/**
- * NEW: Hybrid Geolocation Strategy.
- * Prioritizes HTML5 Geolocation (for GPS) and falls back to Google Geolocation API.
- * @param {function} successCallback Called with the final position object.
- * @param {function} errorCallback Called with a user-friendly error message.
- */
-function getAccurateLocation(successCallback, errorCallback) {
-    // 1. Prioritize HTML5 Geolocation for GPS
-    if (navigator.geolocation) {
-        const options = {
-            enableHighAccuracy: true,
-            timeout: 10000,
-            maximumAge: 0
-        };
+// --- LOCATION LOGIC ---
 
+/**
+ * PHASE 1: Attempts to get location using the browser's built-in, high-accuracy GPS.
+ * @returns {Promise<Position>} A promise that resolves with the position or rejects on failure.
+ */
+function getBrowserGpsLocation() {
+    return new Promise((resolve, reject) => {
+        if (!navigator.geolocation) {
+            return reject("Geolocation is not supported by your browser.");
+        }
+        const options = { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 };
         navigator.geolocation.getCurrentPosition(
             (position) => {
-                // Check for a high-accuracy result (typically GPS)
-                if (position.coords.accuracy && position.coords.accuracy <= 50) {
-                    console.log("Using high-accuracy HTML5 location (GPS).");
-                    successCallback(position);
+                if (position.coords.accuracy <= 100) {
+                    resolve(position);
                 } else {
-                    console.log("HTML5 location not precise enough. Falling back to Google Geolocation API.");
-                    fallbackToGoogleGeolocation(successCallback, errorCallback);
+                    reject(`GPS accuracy is too low (${Math.round(position.coords.accuracy)}m).`);
                 }
             },
             (error) => {
-                let errorMessage = "HTML5 Geolocation failed. Falling back to Google Geolocation API.";
-                if (error.code === error.PERMISSION_DENIED) {
-                    errorMessage = "Location access was denied. Please enable permissions and try again.";
-                    errorCallback(errorMessage);
-                    return; // Do not fallback if permission is denied
+                let message = "GPS Error: ";
+                switch (error.code) {
+                    case error.PERMISSION_DENIED: message += "Permission denied."; break;
+                    case error.POSITION_UNAVAILABLE: message += "Position unavailable."; break;
+                    case error.TIMEOUT: message += "Request timed out."; break;
+                    default: message += "Unknown error.";
                 }
-                console.log(errorMessage);
-                fallbackToGoogleGeolocation(successCallback, errorCallback);
+                reject(message);
             },
             options
         );
+    });
+}
+
+/**
+ * PHASE 2: Gets location using the highly reliable Google Maps Geolocation API.
+ * @returns {Promise<Position>} A promise that resolves with the position or rejects on failure.
+ */
+async function getGoogleApiLocation() {
+    if (!window.GOOGLE_MAPS_API_KEY || window.GOOGLE_MAPS_API_KEY === "YOUR_GOOGLE_MAPS_API_KEY") {
+        throw new Error("Configuration error: Google Maps API key is not set.");
+    }
+    const apiUrl = `https://www.googleapis.com/geolocation/v1/geolocate?key=${window.GOOGLE_MAPS_API_KEY}`;
+    const response = await fetch(apiUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+    if (!response.ok) throw new Error(`Google API responded with status ${response.status}`);
+    const data = await response.json();
+    if (data.location && data.accuracy) {
+        return { coords: { latitude: data.location.lat, longitude: data.location.lng, accuracy: data.accuracy } };
     } else {
-        console.log("HTML5 Geolocation not supported. Falling back to Google Geolocation API.");
-        fallbackToGoogleGeolocation(successCallback, errorCallback);
+        throw new Error("Could not determine location from Google's response.");
     }
 }
 
-async function fallbackToGoogleGeolocation(successCallback, errorCallback) {
-    const apiKey = window.GOOGLE_MAPS_API_KEY;
-    if (!apiKey) {
-        errorCallback("Google Maps API key is missing.");
-        return;
-    }
-
-    try {
-        const response = await fetch(`https://www.googleapis.com/geolocation/v1/geolocate?key=${apiKey}`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({})
-        });
-
-        const data = await response.json();
-
-        if (response.ok) {
-            const position = {
-                coords: {
-                    latitude: data.location.lat,
-                    longitude: data.location.lng,
-                    accuracy: data.accuracy
-                }
-            };
-            console.log("Using Google Geolocation API location.");
-            successCallback(position);
-        } else {
-            const errorMessage = data.error?.message || "An unknown error occurred with the Geolocation API.";
-            errorCallback(errorMessage);
-        }
-    } catch (error) {
-        errorCallback("A network error occurred. Check your internet connection.");
-    }
-}
+// --- OTHER UTILITIES ---
 
 function startRobustTimer(endTimeIsoString, timerElement) {
     if (!endTimeIsoString || !timerElement) return;
@@ -104,9 +80,7 @@ function startRobustTimer(endTimeIsoString, timerElement) {
         if (remaining <= 0) {
             clearInterval(timerInterval);
             timerElement.textContent = "Session Ended";
-            if (document.body.contains(document.getElementById('attendance-form'))) {
-                window.location.reload();
-            }
+            if (document.body.contains(document.getElementById('attendance-form'))) window.location.reload();
             return;
         }
         const minutes = Math.floor(remaining / 60000);
@@ -135,97 +109,106 @@ document.addEventListener('DOMContentLoaded', () => {
 
 function initStudentPage() {
     const attendanceForm = document.getElementById('attendance-form');
+    if (!attendanceForm) return;
+
     const markButton = document.getElementById('mark-btn');
     const enrollmentInput = document.getElementById('enrollment_no');
     const spinner = document.getElementById('button-spinner');
-    
-    // NEW: Live list functionality
-    const presentListElement = document.getElementById('present-students-list');
-    let liveListInterval;
+    const wifiModal = document.getElementById('wifi-prompt-modal');
+    const retryWithGoogleBtn = document.getElementById('retry-with-google-btn');
 
     const fetchPresentStudents = async (sessionId) => {
+        const presentListElement = document.getElementById('present-students-list');
         if (!presentListElement) return;
         try {
             const response = await fetch(`/api/get_present_students/${sessionId}`);
             const data = await response.json();
             if (data.success && data.students) {
-                if (data.students.length > 0) {
-                    presentListElement.innerHTML = data.students.map(s => `<li>${s.name}</li>`).join('');
-                } else {
-                    presentListElement.innerHTML = '<li>No one has marked attendance yet.</li>';
-                }
+                presentListElement.innerHTML = data.students.length > 0
+                    ? data.students.map(s => `<li>${s.name}</li>`).join('')
+                    : '<li>No one has marked attendance yet.</li>';
             }
-        } catch (error) {
-            console.error("Could not fetch present students:", error);
-        }
+        } catch (error) { console.error("Could not fetch present students:", error); }
     };
 
     if (window.activeSessionDataStudent?.id) {
         const sessionId = window.activeSessionDataStudent.id;
-        const timerElement = document.getElementById('timer-student');
-        startRobustTimer(window.activeSessionDataStudent.end_time, timerElement);
-        
-        // Fetch the list immediately, then start polling every 10 seconds
+        startRobustTimer(window.activeSessionDataStudent.end_time, document.getElementById('timer-student'));
         fetchPresentStudents(sessionId);
-        liveListInterval = setInterval(() => fetchPresentStudents(sessionId), 10000);
+        setInterval(() => fetchPresentStudents(sessionId), 10000);
     }
     
-    if (attendanceForm) {
-        enrollmentInput.addEventListener('input', debounce(async () => {
-            const studentNameDisplay = document.getElementById('student-name-display');
-            const enrollmentNo = enrollmentInput.value.trim();
-            if (enrollmentNo.length >= 5) {
-                const response = await fetch(`/api/get_student_name/${enrollmentNo}`);
-                const data = await response.json();
-                studentNameDisplay.textContent = data.name ? `Name: ${data.name}` : 'Student not found.';
-                studentNameDisplay.style.color = data.name ? 'var(--primary-blue)' : 'var(--danger-red)';
-            } else {
-                studentNameDisplay.textContent = '';
-            }
-        }, 300));
+    enrollmentInput.addEventListener('input', debounce(async () => {
+        const studentNameDisplay = document.getElementById('student-name-display');
+        const enrollmentNo = enrollmentInput.value.trim();
+        if (enrollmentNo.length >= 5) {
+            const response = await fetch(`/api/get_student_name/${enrollmentNo}`);
+            const data = await response.json();
+            studentNameDisplay.textContent = data.name ? `Name: ${data.name}` : 'Student not found.';
+            studentNameDisplay.style.color = data.name ? 'var(--primary-blue)' : 'var(--danger-red)';
+        } else {
+            studentNameDisplay.textContent = '';
+        }
+    }, 300));
 
-        attendanceForm.addEventListener('submit', (e) => {
-            e.preventDefault();
-            markButton.disabled = true;
-            spinner.style.display = 'inline-block';
-            markButton.querySelector('span').textContent = 'Getting Location...';
-            document.getElementById('troubleshooting-tips').style.display = 'none';
+    const resetSubmitButton = () => {
+        markButton.disabled = false;
+        spinner.style.display = 'none';
+        markButton.querySelector('span').textContent = 'Mark My Attendance';
+    };
 
-            getAccurateLocation(
-                async (position) => {
-                    markButton.querySelector('span').textContent = 'Submitting...';
-                    const formData = new URLSearchParams({
-                        enrollment_no: enrollmentInput.value,
-                        session_id: window.activeSessionDataStudent.id,
-                        latitude: position.coords.latitude,
-                        longitude: position.coords.longitude,
-                    });
-                    const response = await fetch('/api/mark_attendance', { method: 'POST', body: formData });
-                    const result = await response.json();
-                    showStatusMessage(result.message, result.category);
-
-                    if (result.success) {
-                        attendanceForm.style.display = 'none';
-                        fetchPresentStudents(window.activeSessionDataStudent.id);
-                    } else {
-                        markButton.disabled = false;
-                        spinner.style.display = 'none';
-                        markButton.querySelector('span').textContent = 'Mark My Attendance';
-                        if (result.message.includes("away")) {
-                            document.getElementById('troubleshooting-tips').style.display = 'block';
-                        }
-                    }
-                },
-                (error) => {
-                    showStatusMessage(error, 'error');
-                    markButton.disabled = false;
-                    spinner.style.display = 'none';
-                    markButton.querySelector('span').textContent = 'Mark My Attendance';
-                    document.getElementById('troubleshooting-tips').style.display = 'block';
-                }
-            );
+    const submitAttendance = async (position) => {
+        markButton.querySelector('span').textContent = 'Submitting...';
+        const formData = new URLSearchParams({
+            enrollment_no: enrollmentInput.value,
+            session_id: window.activeSessionDataStudent.id,
+            latitude: position.coords.latitude,
+            longitude: position.coords.longitude,
         });
-    }
+        const response = await fetch('/api/mark_attendance', { method: 'POST', body: formData });
+        const result = await response.json();
+        showStatusMessage(result.message, result.category);
+        if (result.success) {
+            attendanceForm.style.display = 'none';
+            fetchPresentStudents(window.activeSessionDataStudent.id);
+        } else {
+            resetSubmitButton();
+            if (result.message.includes("away")) {
+                document.getElementById('troubleshooting-tips').style.display = 'block';
+            }
+        }
+    };
+
+    attendanceForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        markButton.disabled = true;
+        spinner.style.display = 'inline-block';
+        markButton.querySelector('span').textContent = 'Getting GPS Location...';
+        document.getElementById('troubleshooting-tips').style.display = 'none';
+
+        try {
+            const position = await getBrowserGpsLocation();
+            await submitAttendance(position);
+        } catch (error) {
+            console.warn("Browser GPS failed:", error);
+            showStatusMessage("Could not get a precise GPS signal.", "info");
+            openModal(wifiModal);
+        }
+    });
+
+    retryWithGoogleBtn.addEventListener('click', async () => {
+        closeModal(wifiModal);
+        markButton.querySelector('span').textContent = 'Getting Wi-Fi Location...';
+        try {
+            const position = await getGoogleApiLocation();
+            await submitAttendance(position);
+        } catch (error) {
+            console.error("Google API failed:", error);
+            showStatusMessage("Advanced location check failed. Please check your connection.", "error");
+            document.getElementById('troubleshooting-tips').style.display = 'block';
+            resetSubmitButton();
+        }
+    });
 }
 
 function initControllerDashboard() {
@@ -234,15 +217,16 @@ function initControllerDashboard() {
     const liveManagerBtn = document.getElementById('live-manager-btn');
 
     if (window.activeSessionData?.id) {
-        const timerElement = document.getElementById(`timer-${window.activeSessionData.id}`);
-        startRobustTimer(window.activeSessionData.end_time, timerElement);
+        startRobustTimer(window.activeSessionData.end_time, document.getElementById(`timer-${window.activeSessionData.id}`));
     }
 
     if (startButton) {
-        startButton.addEventListener('click', () => {
+        startButton.addEventListener('click', async () => {
             startButton.disabled = true;
             startButton.textContent = 'Getting Location...';
-            getAccurateLocation(async (position) => {
+            try {
+                // Controller can use the simple GPS method as it's less critical.
+                const position = await getBrowserGpsLocation();
                 startButton.textContent = 'Starting...';
                 const response = await fetch('/api/start_session', {
                     method: 'POST',
@@ -250,18 +234,17 @@ function initControllerDashboard() {
                     body: JSON.stringify({ latitude: position.coords.latitude, longitude: position.coords.longitude }),
                 });
                 const result = await response.json();
-                if (result.success) {
-                    window.location.reload();
-                } else {
+                if (result.success) window.location.reload();
+                else {
                     showStatusMessage(result.message, 'error');
                     startButton.disabled = false;
                     startButton.textContent = 'Start New Session';
                 }
-            }, (error) => {
-                showStatusMessage(error, 'error');
+            } catch (error) {
+                showStatusMessage("Failed to get precise location to start session.", 'error');
                 startButton.disabled = false;
                 startButton.textContent = 'Start New Session';
-            });
+            }
         });
     }
     
@@ -275,13 +258,12 @@ function initControllerDashboard() {
 
     if (liveManagerBtn) {
         liveManagerBtn.addEventListener('click', () => {
-            const sessionId = liveManagerBtn.dataset.sessionId;
             setupManagerModal({
                 title: "Live Attendance Manager",
-                subtitle: `Session ID: ${sessionId}`,
-                fetchUrl: `/api/get_students_for_session/${sessionId}`,
+                subtitle: `Session ID: ${liveManagerBtn.dataset.sessionId}`,
+                fetchUrl: `/api/get_students_for_session/${liveManagerBtn.dataset.sessionId}`,
                 apiUrl: '/api/toggle_attendance_for_session',
-                payload: { session_id: sessionId }
+                payload: { session_id: liveManagerBtn.dataset.sessionId }
             });
         });
     }
@@ -290,18 +272,19 @@ function initControllerDashboard() {
 function initReportPage() {
     document.querySelectorAll('.edit-day-btn').forEach(button => {
         button.addEventListener('click', (e) => {
-            const date = e.target.dataset.date;
             setupManagerModal({
                 title: "Edit Attendance",
-                subtitle: `Date: ${date}`,
-                fetchUrl: `/api/get_students_for_day/${date}`,
+                subtitle: `Date: ${e.target.dataset.date}`,
+                fetchUrl: `/api/get_students_for_day/${e.target.dataset.date}`,
                 apiUrl: '/api/toggle_attendance_for_day',
-                payload: { date: date }
+                payload: { date: e.target.dataset.date }
             });
         });
     });
 
     const deleteModal = document.getElementById('confirm-delete-modal');
+    if (!deleteModal) return;
+
     const confirmDeleteBtn = document.getElementById('confirm-delete-btn');
     const deleteDateDisplay = document.getElementById('modal-delete-date-display');
     let dateToDelete = null;
@@ -321,9 +304,7 @@ function initReportPage() {
             const response = await fetch(`/api/delete_day/${dateToDelete}`, { method: 'DELETE' });
             const result = await response.json();
             showStatusMessage(result.message, result.success ? 'success' : 'error');
-            if (result.success) {
-                document.getElementById(`row-${dateToDelete}`).remove();
-            }
+            if (result.success) document.getElementById(`row-${dateToDelete}`).remove();
             closeModal(deleteModal);
             confirmDeleteBtn.disabled = false;
         });
@@ -332,9 +313,10 @@ function initReportPage() {
 
 function setupManagerModal(config) {
     const managerModal = document.getElementById('manager-modal');
-    const studentListContainer = document.getElementById('student-list-container');
-    const searchInput = document.getElementById('student-search-input');
     if(!managerModal) return;
+    const studentListContainer = managerModal.querySelector('#student-list-container');
+    const searchInput = managerModal.querySelector('#student-search-input');
+    
     managerModal.querySelector('#modal-title').textContent = config.title;
     managerModal.querySelector('#modal-subtitle').textContent = config.subtitle;
     studentListContainer.innerHTML = '<p style="text-align:center;">Loading students...</p>';
@@ -403,17 +385,13 @@ function renderStudentList(students, config, container) {
 }
 
 function openModal(modalElement) {
-    if (modalElement) {
-        modalElement.style.display = 'block';
-        document.body.classList.add('modal-open');
-    }
+    if (modalElement) modalElement.style.display = 'block';
+    document.body.classList.add('modal-open');
 }
 
 function closeModal(modalElement) {
-    if (modalElement) {
-        modalElement.style.display = 'none';
-        document.body.classList.remove('modal-open');
-    }
+    if (modalElement) modalElement.style.display = 'none';
+    document.body.classList.remove('modal-open');
 }
 
 document.querySelectorAll('.modal').forEach(modal => {
@@ -424,3 +402,4 @@ document.querySelectorAll('.modal').forEach(modal => {
         btn.addEventListener('click', () => closeModal(modal));
     });
 });
+

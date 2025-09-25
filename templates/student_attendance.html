@@ -60,19 +60,13 @@
             {% else %}
                 <div class="status-indicator status-inactive">Session is Inactive</div>
                 <div class="info-message" style="background-color: transparent; border: 1px solid var(--border-color);">
-                    {% if present_students %}
-                        Attendance for today is complete.
-                    {% else %}
-                        There is no active attendance session right now.
-                    {% endif %}
+                    {% if present_students %} Attendance for today is complete. {% else %} There is no active attendance session right now. {% endif %}
                 </div>
                 {% if present_students %}
                 <div class="live-list-container">
                     <h3>Final List for Today</h3>
                     <ul id="present-students-list">
-                        {% for student in present_students %}
-                            <li>{{ student.name }}</li>
-                        {% endfor %}
+                        {% for student in present_students %} <li>{{ student.name }}</li> {% endfor %}
                     </ul>
                 </div>
                 {% endif %}
@@ -81,20 +75,32 @@
             <div id="troubleshooting-tips" class="section-card" style="display: none; margin-top: 2rem; background-color: var(--input-bg); padding: 1.5rem; border-radius: var(--border-radius);">
                 <h3 style="margin-top:0; color:var(--primary-blue);">Location Troubleshooting</h3>
                 <ul style="text-align: left; padding-left: 20px; color: var(--text-color);">
-                    <li><strong>Enable Wi-Fi without connecting to any network:</strong> This is the most important step for accurate indoor location.</li>
+                    <li><strong>Enable Wi-Fi:</strong> Turning on Wi-Fi is the most important step for an accurate indoor location.</li>
                     <li><strong>Check Internet Connection:</strong> A stable connection is required for this service.</li>
-                    <li><strong>Restart Browser:</strong> Sometimes a simple restart of your mobile browser can fix issues.</li>
+                    <li><strong>Move Near a Window:</strong> A clearer view of the sky helps with GPS signals.</li>
                 </ul>
+            </div>
+        </div>
+
+        <!-- NEW: Modal to prompt user to enable Wi-Fi for Google API fallback -->
+        <div id="wifi-prompt-modal" class="modal">
+            <div class="modal-content">
+                <h3 style="color:var(--primary-blue);">Improve Location Accuracy</h3>
+                <p>We're having trouble getting a precise GPS location. For the best results indoors, please enable your device's Wi-Fi.</p>
+                <p style="font-size: 0.9em; color: var(--text-muted);">You do not need to connect to a network, the Wi-Fi just needs to be turned on.</p>
+                <div class="modal-actions" style="justify-content: center;">
+                    <button id="retry-with-google-btn" class="button">Try Again with Wi-Fi</button>
+                </div>
             </div>
         </div>
         
         <footer class="custom-footer">Mark My Attendance (by Ritik)</footer>
     </div>
     <script>
-        // API Key has been inserted below
         window.GOOGLE_MAPS_API_KEY = "AIzaSyCUX3zDTXuz-01Vn2zVokyW-LA1jbnk2mM"; 
         window.activeSessionDataStudent = {{ active_session | tojson | safe }};
     </script>
     <script src="{{ url_for('static', filename='main.js') }}"></script>
 </body>
 </html>
+
