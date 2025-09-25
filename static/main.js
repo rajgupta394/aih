@@ -1,6 +1,7 @@
 /**
  * Frontend logic for the AIH Attendance System.
  * Version with a two-step ("waterfall") location system for maximum reliability.
+ * OPTIMIZED: Faster timeout and better user feedback.
  */
 
 // =============================================================================
@@ -20,7 +21,7 @@ function showStatusMessage(message, type) {
 
 /**
  * PHASE 1: Attempts to get location using the browser's built-in, high-accuracy GPS.
- * This is the standard HTML5 Geolocation API.
+ * OPTIMIZED: Timeout reduced to 8 seconds for a faster fallback.
  * @returns {Promise<Position>} A promise that resolves with the position or rejects on failure.
  */
 function getBrowserGpsLocation() {
@@ -28,7 +29,7 @@ function getBrowserGpsLocation() {
         if (!navigator.geolocation) {
             return reject("Geolocation is not supported by your browser.");
         }
-        const options = { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 };
+        const options = { enableHighAccuracy: true, timeout: 8000, maximumAge: 0 }; // Faster timeout
         navigator.geolocation.getCurrentPosition(
             (position) => {
                 // We accept any accuracy initially; the server will verify the radius.
@@ -136,10 +137,15 @@ function initStudentPage() {
         setInterval(() => fetchPresentStudents(sessionId), 10000);
     }
     
-    enrollmentInput.addEventListener('input', debounce(async () => {
+    enrollmentInput.addEventListener('input', debounce(async (e) => {
         const studentNameDisplay = document.getElementById('student-name-display');
-        const enrollmentNo = enrollmentInput.value.trim();
+        const enrollmentNo = e.target.value.trim();
+        
         if (enrollmentNo.length >= 5) {
+            // OPTIMIZED: Show instant feedback
+            studentNameDisplay.textContent = 'Searching...';
+            studentNameDisplay.style.color = 'var(--text-muted)';
+
             const response = await fetch(`/api/get_student_name/${enrollmentNo}`);
             const data = await response.json();
             studentNameDisplay.textContent = data.name ? `Name: ${data.name}` : 'Student not found.';
@@ -147,7 +153,7 @@ function initStudentPage() {
         } else {
             studentNameDisplay.textContent = '';
         }
-    }, 300));
+    }, 250)); // OPTIMIZED: Reduced delay for faster response
 
     const resetSubmitButton = () => {
         markButton.disabled = false;
