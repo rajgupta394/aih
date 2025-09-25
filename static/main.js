@@ -20,6 +20,7 @@ function showStatusMessage(message, type) {
 
 /**
  * PHASE 1: Attempts to get location using the browser's built-in, high-accuracy GPS.
+ * This is the standard HTML5 Geolocation API.
  * @returns {Promise<Position>} A promise that resolves with the position or rejects on failure.
  */
 function getBrowserGpsLocation() {
@@ -30,11 +31,8 @@ function getBrowserGpsLocation() {
         const options = { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 };
         navigator.geolocation.getCurrentPosition(
             (position) => {
-                if (position.coords.accuracy <= 100) {
-                    resolve(position);
-                } else {
-                    reject(`GPS accuracy is too low (${Math.round(position.coords.accuracy)}m).`);
-                }
+                // We accept any accuracy initially; the server will verify the radius.
+                resolve(position);
             },
             (error) => {
                 let message = "GPS Error: ";
@@ -52,7 +50,7 @@ function getBrowserGpsLocation() {
 }
 
 /**
- * PHASE 2: Gets location using the highly reliable Google Maps Geolocation API.
+ * PHASE 2: Gets location using the highly reliable Google Maps Geolocation API as a fallback.
  * @returns {Promise<Position>} A promise that resolves with the position or rejects on failure.
  */
 async function getGoogleApiLocation() {
@@ -157,21 +155,30 @@ function initStudentPage() {
         markButton.querySelector('span').textContent = 'Mark My Attendance';
     };
 
-    const submitAttendance = async (position) => {
-        markButton.querySelector('span').textContent = 'Submitting...';
+    const handleAttendanceSubmission = async (position, method) => {
         const formData = new URLSearchParams({
             enrollment_no: enrollmentInput.value,
             session_id: window.activeSessionDataStudent.id,
             latitude: position.coords.latitude,
             longitude: position.coords.longitude,
+            location_method: method // Tell the backend which method we used
         });
+
         const response = await fetch('/api/mark_attendance', { method: 'POST', body: formData });
         const result = await response.json();
-        showStatusMessage(result.message, result.category);
+
+        // This is the core of the new waterfall logic
         if (result.success) {
+            showStatusMessage(result.message, result.category);
             attendanceForm.style.display = 'none';
             fetchPresentStudents(window.activeSessionDataStudent.id);
+        } else if (result.category === 'retry_high_accuracy') {
+            // Backend told us the GPS was out of radius, so we prompt for Wi-Fi and then use Google.
+            showStatusMessage(result.message, 'info');
+            openModal(wifiModal);
         } else {
+            // This is a final failure (e.g., already marked, session expired, or final Google check also failed)
+            showStatusMessage(result.message, result.category);
             resetSubmitButton();
             if (result.message.includes("away")) {
                 document.getElementById('troubleshooting-tips').style.display = 'block';
@@ -187,29 +194,30 @@ function initStudentPage() {
         document.getElementById('troubleshooting-tips').style.display = 'none';
 
         try {
-            const position = await getBrowserGpsLocation();
-            await submitAttendance(position);
-        } catch (error) {
-            console.warn("Browser GPS failed:", error);
-            showStatusMessage("Could not get a precise GPS signal.", "info");
+            const gpsPosition = await getBrowserGpsLocation();
+            await handleAttendanceSubmission(gpsPosition, 'gps'); // First attempt using standard GPS
+        } catch (gpsError) {
+            // If the initial GPS fails entirely (e.g., timeout, permission denied), we also fall back.
+            console.warn("Initial GPS failed:", gpsError);
+            showStatusMessage("GPS failed. Please enable Wi-Fi for a more precise check.", "info");
             openModal(wifiModal);
         }
     });
-
+    
     retryWithGoogleBtn.addEventListener('click', async () => {
         closeModal(wifiModal);
         markButton.querySelector('span').textContent = 'Getting Wi-Fi Location...';
         try {
-            const position = await getGoogleApiLocation();
-            await submitAttendance(position);
-        } catch (error) {
-            console.error("Google API failed:", error);
-            showStatusMessage("Advanced location check failed. Please check your connection.", "error");
+            const googlePosition = await getGoogleApiLocation();
+            await handleAttendanceSubmission(googlePosition, 'google'); // Second attempt using Google API
+        } catch (googleError) {
+            showStatusMessage("Advanced location check failed. Please check your connection and enable Wi-Fi.", "error");
             document.getElementById('troubleshooting-tips').style.display = 'block';
             resetSubmitButton();
         }
     });
 }
+
 
 function initControllerDashboard() {
     const startButton = document.getElementById('start-session-btn');
@@ -225,7 +233,7 @@ function initControllerDashboard() {
             startButton.disabled = true;
             startButton.textContent = 'Getting Location...';
             try {
-                // Controller can use the simple GPS method as it's less critical.
+                // Controller can use the simple GPS method.
                 const position = await getBrowserGpsLocation();
                 startButton.textContent = 'Starting...';
                 const response = await fetch('/api/start_session', {

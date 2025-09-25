@@ -10,15 +10,14 @@ import io
 import csv
 
 app = Flask(__name__)
-# Use a strong, consistent secret key from environment variables for production
 app.secret_key = os.environ.get('SECRET_KEY', 'a_strong_default_secret_key_for_development')
 
-# --- Application Configuration for AIH Department ---
+# --- Application Configuration ---
 CLASS_NAME = 'B.A. - AIH'
-BATCH_CODE = 'BA' 
-GEOFENCE_RADIUS = 50  # Radius in meters
+BATCH_CODE = 'BA'
+GEOFENCE_RADIUS = 50
 
-# --- Controller Credentials (Use environment variables for production) ---
+# --- Controller Credentials ---
 CONTROLLER_USERNAME = os.environ.get('AIH_CONTROLLER_USER', 'aih_controller')
 CONTROLLER_PASSWORD = os.environ.get('AIH_CONTROLLER_PASS', 'aih_pass_123')
 
@@ -28,7 +27,6 @@ if not DATABASE_URL:
     raise RuntimeError("FATAL: The DATABASE_URL environment variable is not set.")
 
 def get_db_connection():
-    """Establishes a reliable connection to the PostgreSQL database."""
     try:
         conn = psycopg2.connect(DATABASE_URL)
         return conn
@@ -36,7 +34,7 @@ def get_db_connection():
         print(f"FATAL: Database connection failed: {e}")
         return None
 
-# --- Decorator for Controller-Only Routes ---
+# --- Decorator ---
 def controller_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
@@ -66,7 +64,7 @@ def get_controller_id_by_username(cursor):
     result = cursor.fetchone()
     return result[0] if result else None
 
-# --- Main & Authentication Routes ---
+# --- Main & Auth Routes ---
 @app.route('/')
 def home():
     if 'user_id' in session and session.get('role') == 'aih_controller':
@@ -92,9 +90,9 @@ def login():
                         session['role'] = 'aih_controller'
                         return redirect(url_for('controller_dashboard'))
                     else:
-                        flash("Controller user not configured in the database.", "danger")
+                        flash("Controller user not configured.", "danger")
                 else:
-                    flash("Invalid username or password.", "danger")
+                    flash("Invalid credentials.", "danger")
         finally:
             if conn: conn.close()
     return render_template('login.html', class_name=CLASS_NAME)
@@ -102,39 +100,31 @@ def login():
 @app.route('/logout')
 def logout():
     session.clear()
-    flash("You have been successfully logged out.", "info")
+    flash("You have been logged out.", "info")
     return redirect(url_for('login'))
 
-# --- Student & Controller Views ---
+# --- Views ---
 @app.route('/student')
 def student_page():
     active_session, present_students, geofence_data = None, None, None
-    todays_date = datetime.now(timezone.utc).strftime('%A, %B %d, %Y')
     conn = get_db_connection()
     if conn:
         try:
             with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
                 class_id = get_class_id_by_name(cur)
                 if class_id:
-                    cur.execute("""
-                        SELECT id, end_time, geofence_lat, geofence_lon, geofence_radius FROM attendance_sessions 
-                        WHERE class_id = %s AND is_active = TRUE AND end_time > NOW() AT TIME ZONE 'UTC' LIMIT 1
-                    """, (class_id,))
+                    cur.execute("SELECT id, end_time, geofence_lat, geofence_lon, geofence_radius FROM attendance_sessions WHERE class_id = %s AND is_active = TRUE AND end_time > NOW() AT TIME ZONE 'UTC' LIMIT 1", (class_id,))
                     session_data = cur.fetchone()
                     if session_data:
                         active_session = {'id': session_data['id'], 'end_time': session_data['end_time'].isoformat()}
                         geofence_data = { 'lat': session_data['geofence_lat'], 'lon': session_data['geofence_lon'], 'radius': session_data['geofence_radius'] }
                     else:
                         today_utc = datetime.now(timezone.utc).date()
-                        cur.execute("""
-                            SELECT DISTINCT s.name, s.enrollment_no FROM attendance_records ar
-                            JOIN students s ON ar.student_id = s.id JOIN attendance_sessions ases ON ar.session_id = ases.id
-                            WHERE ases.class_id = %s AND DATE(ases.start_time AT TIME ZONE 'UTC') = %s ORDER BY s.name ASC
-                        """, (class_id, today_utc))
+                        cur.execute("SELECT DISTINCT s.name FROM students s JOIN attendance_records ar ON s.id = ar.student_id JOIN attendance_sessions ases ON ar.session_id = ases.id WHERE ases.class_id = %s AND DATE(ases.start_time AT TIME ZONE 'UTC') = %s ORDER BY s.name ASC", (class_id, today_utc))
                         present_students = cur.fetchall()
         finally:
             if conn: conn.close()
-    return render_template('student_attendance.html', active_session=active_session, present_students=present_students, class_name=CLASS_NAME, todays_date=todays_date, geofence_data=geofence_data)
+    return render_template('student_attendance.html', active_session=active_session, present_students=present_students, class_name=CLASS_NAME, geofence_data=geofence_data)
 
 @app.route('/controller_dashboard')
 @controller_required
@@ -161,17 +151,14 @@ def attendance_report():
     if not conn:
         flash("Database connection failed.", "danger")
         return redirect(url_for('controller_dashboard'))
-    
     report_data, students = [], []
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
             class_id = get_class_id_by_name(cur)
             cur.execute("SELECT id, name, enrollment_no FROM students WHERE batch = %s ORDER BY enrollment_no", (BATCH_CODE,))
             students = cur.fetchall()
-            
             cur.execute("SELECT DISTINCT DATE(start_time AT TIME ZONE 'UTC') as class_date FROM attendance_sessions WHERE class_id = %s ORDER BY class_date DESC", (class_id,))
             class_dates = [row['class_date'] for row in cur.fetchall()]
-
             for class_date in class_dates:
                 daily_entry = {'date': class_date.strftime('%Y-%m-%d'), 'students': []}
                 cur.execute("SELECT DISTINCT student_id FROM attendance_records ar JOIN attendance_sessions s ON ar.session_id = s.id WHERE s.class_id = %s AND DATE(s.start_time AT TIME ZONE 'UTC') = %s", (class_id, class_date))
@@ -182,7 +169,6 @@ def attendance_report():
         if conn: conn.close()
     return render_template('attendance_report.html', report_data=report_data, students=students, class_name=CLASS_NAME)
 
-# --- UPGRADED CSV EXPORT ---
 @app.route('/export_csv')
 @controller_required
 def export_csv():
@@ -194,35 +180,26 @@ def export_csv():
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
             class_id = get_class_id_by_name(cur)
-            
             cur.execute("SELECT MIN(start_time AT TIME ZONE 'UTC') as first_date FROM attendance_sessions WHERE class_id = %s", (class_id,))
             first_date_record = cur.fetchone()
             if not first_date_record or not first_date_record['first_date']:
-                flash("No attendance data available to export.", "info")
+                flash("No attendance data to export.", "info")
                 return redirect(url_for('attendance_report'))
-            
             start_date = first_date_record['first_date'].date()
             end_date = datetime.now(timezone.utc).date()
             date_range = [start_date + timedelta(days=x) for x in range((end_date - start_date).days + 1)]
-
             cur.execute("SELECT id, name, enrollment_no FROM students WHERE batch = %s ORDER BY enrollment_no", (BATCH_CODE,))
             students = cur.fetchall()
-
             cur.execute("SELECT DISTINCT DATE(start_time AT TIME ZONE 'UTC') as session_date FROM attendance_sessions WHERE class_id = %s", (class_id,))
             session_days = {row['session_date'] for row in cur.fetchall()}
             total_working_days = len(session_days)
-
             cur.execute("SELECT ar.student_id, DATE(s.start_time AT TIME ZONE 'UTC') AS session_date FROM attendance_records ar JOIN attendance_sessions s ON ar.session_id = s.id WHERE s.class_id = %s", (class_id,))
             attendance_map = { (rec['student_id'], rec['session_date']): 'P' for rec in cur.fetchall() }
-            
             output = io.StringIO()
             writer = csv.writer(output)
-            
             writer.writerows([['School Name:', csv_config['school_name']], ['Course Title:', csv_config['course_title']], ['Professor Name:', csv_config['professor_name']], [], ['Key:'], ['P', 'Present'], ['A', 'Absent'], ['H', 'Holiday'], []])
-            
             header = ['Student Name', 'ID Number'] + [d.strftime('%Y-%m-%d') for d in date_range] + ['Attendance %']
             writer.writerow(header)
-
             for student in students:
                 present_count = 0
                 row_data = []
@@ -235,71 +212,44 @@ def export_csv():
                         else:
                             status = 'A'
                     row_data.append(status)
-                
                 percentage = (present_count / total_working_days * 100) if total_working_days > 0 else 0
                 percentage_str = f"{percentage:.1f}%"
-                
                 writer.writerow([student['name'], student['enrollment_no']] + row_data + [percentage_str])
-            
             output.seek(0)
             file_name = f"AIH_Attendance_Report_{start_date}_to_{end_date}.csv"
             return send_file(io.BytesIO(output.getvalue().encode('utf-8')), mimetype='text/csv', as_attachment=True, download_name=file_name)
     finally:
         if conn: conn.close()
 
-
 # --- API Endpoints ---
-
-# NEW/UPDATED API Endpoint for live student list
-@app.route('/api/get_present_students/<int:session_id>')
-def api_get_present_students(session_id):
-    conn = get_db_connection()
-    if not conn: 
-        return jsonify({"success": False, "students": []})
-    try:
-        with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
-            cur.execute("""
-                SELECT s.name, s.enrollment_no 
-                FROM attendance_records ar
-                JOIN students s ON ar.student_id = s.id
-                WHERE ar.session_id = %s 
-                ORDER BY s.name ASC
-            """, (session_id,))
-            students = [dict(row) for row in cur.fetchall()]
-            return jsonify({"success": True, "students": students})
-    except (Exception, psycopg2.Error) as e:
-        print(f"Error in get_present_students: {e}")
-        return jsonify({"success": False, "students": []})
-    finally:
-        if conn: conn.close()
-
 @app.route('/api/mark_attendance', methods=['POST'])
 def api_mark_attendance():
     data = request.form
     user_ip = request.headers.get('X-Forwarded-For', request.remote_addr).split(',')[0].strip()
     conn = get_db_connection()
     if not conn: return jsonify({"success": False, "message": "Database service unavailable."}), 503
-
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+            location_method = data.get('location_method', 'gps')
             cur.execute("SELECT id, name FROM students WHERE enrollment_no = %s AND batch = %s", (data['enrollment_no'].strip().upper(), BATCH_CODE))
             student = cur.fetchone()
             if not student: return jsonify({"success": False, "message": "Enrollment number not found.", "category": "danger"}), 404
-
             cur.execute("SELECT ar.id FROM attendance_records ar JOIN attendance_sessions ases ON ar.session_id = ases.id WHERE ar.student_id = %s AND DATE(ases.start_time AT TIME ZONE 'UTC') = %s", (student['id'], datetime.now(timezone.utc).date()))
-            if cur.fetchone():
-                return jsonify({"success": False, "message": "You have already marked attendance today.", "category": "warning"}), 409
-
+            if cur.fetchone(): return jsonify({"success": False, "message": "You have already marked attendance today.", "category": "warning"}), 409
             cur.execute("SELECT id, geofence_lat, geofence_lon FROM attendance_sessions WHERE id = %s AND is_active = TRUE AND end_time > NOW() AT TIME ZONE 'UTC'", (data['session_id'],))
             session_info = cur.fetchone()
-            if not session_info: return jsonify({"success": False, "message": "Attendance session has expired.", "category": "danger"}), 400
-
+            if not session_info: return jsonify({"success": False, "message": "Session has expired.", "category": "danger"}), 400
+            
             distance = haversine_distance(float(data['latitude']), float(data['longitude']), session_info['geofence_lat'], session_info['geofence_lon'])
-            if distance > GEOFENCE_RADIUS: return jsonify({"success": False, "message": f"You are {distance:.0f}m away. Move within {GEOFENCE_RADIUS}m.", "category": "danger"}), 403
-
+            
+            if distance > GEOFENCE_RADIUS:
+                if location_method == 'gps':
+                    return jsonify({ "success": False, "category": "retry_high_accuracy", "message": "GPS location is outside the area. Now trying a more precise check..." })
+                else:
+                    return jsonify({ "success": False, "message": f"You are {distance:.0f}m away. Please move within the {GEOFENCE_RADIUS}m radius.", "category": "danger" }), 403
+            
             cur.execute("SELECT 1 FROM attendance_records WHERE session_id = %s AND ip_address = %s", (session_info['id'], user_ip))
-            if cur.fetchone():
-                return jsonify({"success": False, "message": "This network has already been used by another student.", "category": "danger"}), 403
+            if cur.fetchone(): return jsonify({"success": False, "message": "This network has already been used.", "category": "danger"}), 403
             
             cur.execute("INSERT INTO attendance_records (session_id, student_id, timestamp, latitude, longitude, ip_address) VALUES (%s, %s, NOW() AT TIME ZONE 'UTC', %s, %s, %s)", (session_info['id'], student['id'], data['latitude'], data['longitude'], user_ip))
             conn.commit()
@@ -308,6 +258,18 @@ def api_mark_attendance():
         if conn: conn.rollback()
         print(f"ERROR in api_mark_attendance: {e}")
         return jsonify({"success": False, "message": "A server error occurred."}), 500
+    finally:
+        if conn: conn.close()
+
+@app.route('/api/get_present_students/<int:session_id>')
+def api_get_present_students(session_id):
+    conn = get_db_connection()
+    if not conn: return jsonify({"success": False, "students": []})
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+            cur.execute("SELECT s.name FROM students s JOIN attendance_records ar ON s.id = ar.student_id WHERE ar.session_id = %s ORDER BY s.name ASC", (session_id,))
+            students = [row['name'] for row in cur.fetchall()]
+            return jsonify({"success": True, "students": students})
     finally:
         if conn: conn.close()
 
@@ -321,8 +283,7 @@ def api_start_session():
         with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
             class_id = get_class_id_by_name(cur)
             cur.execute("SELECT id FROM attendance_sessions WHERE class_id = %s AND is_active = TRUE AND end_time > NOW() AT TIME ZONE 'UTC'", (class_id,))
-            if cur.fetchone():
-                return jsonify({"success": False, "message": "An active session already exists."}), 409
+            if cur.fetchone(): return jsonify({"success": False, "message": "An active session already exists."}), 409
             cur.execute("INSERT INTO attendance_sessions (class_id, controller_id, session_token, start_time, end_time, is_active, geofence_lat, geofence_lon, geofence_radius) VALUES (%s, %s, %s, NOW() AT TIME ZONE 'UTC', NOW() AT TIME ZONE 'UTC' + interval '5 minutes', TRUE, %s, %s, %s) RETURNING id, end_time", (class_id, session['user_id'], secrets.token_hex(16), data['latitude'], data['longitude'], GEOFENCE_RADIUS))
             new_session = cur.fetchone()
             conn.commit()
