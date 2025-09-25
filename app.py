@@ -120,7 +120,7 @@ def student_page():
                         geofence_data = { 'lat': session_data['geofence_lat'], 'lon': session_data['geofence_lon'], 'radius': session_data['geofence_radius'] }
                     else:
                         today_utc = datetime.now(timezone.utc).date()
-                        cur.execute("SELECT DISTINCT s.name FROM students s JOIN attendance_records ar ON s.id = ar.student_id JOIN attendance_sessions ases ON ar.session_id = ases.id WHERE ases.class_id = %s AND DATE(ases.start_time AT TIME ZONE 'UTC') = %s ORDER BY s.name ASC", (class_id, today_utc))
+                        cur.execute("SELECT DISTINCT s.name, s.enrollment_no FROM students s JOIN attendance_records ar ON s.id = ar.student_id JOIN attendance_sessions ases ON ar.session_id = ases.id WHERE ases.class_id = %s AND DATE(ases.start_time AT TIME ZONE 'UTC') = %s ORDER BY s.name ASC", (class_id, today_utc))
                         present_students = cur.fetchall()
         finally:
             if conn: conn.close()
@@ -267,8 +267,9 @@ def api_get_present_students(session_id):
     if not conn: return jsonify({"success": False, "students": []})
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
-            cur.execute("SELECT s.name FROM students s JOIN attendance_records ar ON s.id = ar.student_id WHERE ar.session_id = %s ORDER BY s.name ASC", (session_id,))
-            students = [row['name'] for row in cur.fetchall()]
+            # FIXED: Query now returns a list of objects, not strings.
+            cur.execute("SELECT s.name, s.enrollment_no FROM students s JOIN attendance_records ar ON s.id = ar.student_id WHERE ar.session_id = %s ORDER BY s.name ASC", (session_id,))
+            students = [dict(row) for row in cur.fetchall()]
             return jsonify({"success": True, "students": students})
     finally:
         if conn: conn.close()

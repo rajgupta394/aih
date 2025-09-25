@@ -60,19 +60,13 @@
             {% else %}
                 <div class="status-indicator status-inactive">Session is Inactive</div>
                 <div class="info-message" style="background-color: transparent; border: 1px solid var(--border-color);">
-                    {% if present_students %}
-                        Attendance for today is complete.
-                    {% else %}
-                        There is no active attendance session right now.
-                    {% endif %}
+                    {% if present_students %} Attendance for today is complete. {% else %} There is no active attendance session right now. {% endif %}
                 </div>
                 {% if present_students %}
                 <div class="live-list-container">
                     <h3>Final List for Today</h3>
                     <ul id="present-students-list">
-                        {% for student in present_students %}
-                            <li>{{ student.name }}</li>
-                        {% endfor %}
+                        {% for student in present_students %} <li>{{ student.name }}</li> {% endfor %}
                     </ul>
                 </div>
                 {% endif %}
@@ -88,7 +82,7 @@
             </div>
         </div>
 
-        <!-- This modal is used for the advanced two-step location check -->
+        <!-- NEW: Modal to prompt user to enable Wi-Fi for Google API fallback -->
         <div id="wifi-prompt-modal" class="modal">
             <div class="modal-content">
                 <h3 style="color:var(--primary-blue);">Improve Location Accuracy</h3>

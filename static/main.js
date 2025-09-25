@@ -231,7 +231,6 @@ function initControllerDashboard() {
 
             let position;
             try {
-                // First, try the standard high-accuracy GPS
                 startButton.textContent = 'Getting GPS Location...';
                 position = await getBrowserGpsLocation();
             } catch (gpsError) {
@@ -239,17 +238,15 @@ function initControllerDashboard() {
                 showStatusMessage("GPS failed. Trying advanced check...", "info");
                 startButton.textContent = 'Getting Wi-Fi Location...';
                 try {
-                    // If GPS fails, immediately fall back to Google API
                     position = await getGoogleApiLocation();
                 } catch (googleError) {
                     showStatusMessage("Could not get a precise location. Please enable Wi-Fi.", "error");
                     startButton.disabled = false;
                     startButton.textContent = 'Start New Session';
-                    return; // Stop execution
+                    return;
                 }
             }
 
-            // If we successfully get a position from either method
             startButton.textContent = 'Starting Session...';
             const response = await fetch('/api/start_session', {
                 method: 'POST',
