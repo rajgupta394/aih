@@ -55,7 +55,8 @@ def haversine_distance(lat1, lon1, lat2, lon2):
     return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 def get_class_id_by_name(cursor):
-    cursor.execute("SELECT id FROM classes WHERE class_name = 'BA - Anthropology'")
+    # FIXED: Use the configuration variable for consistency
+    cursor.execute("SELECT id FROM classes WHERE class_name = %s", (CLASS_NAME,))
     result = cursor.fetchone()
     return result[0] if result else None
 
@@ -113,7 +114,7 @@ def student_page():
             with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
                 class_id = get_class_id_by_name(cur)
                 if class_id:
-                    cur.execute("SELECT id, end_time, geofence_lat, geofence_lon, geofence_radius FROM attendance_sessions WHERE class_id = %s AND is_active = TRUE AND end_time > NOW() AT TIME ZONE 'UTC' LIMIT 1", (class_id,))
+                    cur.execute("SELECT s.id, s.end_time, c.geofence_lat, c.geofence_lon, c.geofence_radius FROM attendance_sessions s JOIN classes c ON s.class_id = c.id WHERE s.class_id = %s AND s.is_active = TRUE AND s.end_time > NOW() AT TIME ZONE 'UTC' LIMIT 1", (class_id,))
                     session_data = cur.fetchone()
                     if session_data:
                         active_session = {'id': session_data['id'], 'end_time': session_data['end_time'].isoformat()}
@@ -236,17 +237,19 @@ def api_mark_attendance():
             if not student: return jsonify({"success": False, "message": "Enrollment number not found.", "category": "danger"}), 404
             cur.execute("SELECT ar.id FROM attendance_records ar JOIN attendance_sessions ases ON ar.session_id = ases.id WHERE ar.student_id = %s AND DATE(ases.start_time AT TIME ZONE 'UTC') = %s", (student['id'], datetime.now(timezone.utc).date()))
             if cur.fetchone(): return jsonify({"success": False, "message": "You have already marked attendance today.", "category": "warning"}), 409
-            cur.execute("SELECT id, geofence_lat, geofence_lon FROM attendance_sessions WHERE id = %s AND is_active = TRUE AND end_time > NOW() AT TIME ZONE 'UTC'", (data['session_id'],))
+            
+            cur.execute("SELECT s.id, c.geofence_lat, c.geofence_lon, c.geofence_radius FROM attendance_sessions s JOIN classes c ON s.class_id = c.id WHERE s.id = %s AND s.is_active = TRUE AND s.end_time > NOW() AT TIME ZONE 'UTC'", (data['session_id'],))
             session_info = cur.fetchone()
             if not session_info: return jsonify({"success": False, "message": "Session has expired.", "category": "danger"}), 400
             
+            geofence_radius = session_info['geofence_radius'] or GEOFENCE_RADIUS
             distance = haversine_distance(float(data['latitude']), float(data['longitude']), session_info['geofence_lat'], session_info['geofence_lon'])
             
-            if distance > GEOFENCE_RADIUS:
+            if distance > geofence_radius:
                 if location_method == 'gps':
                     return jsonify({ "success": False, "category": "retry_high_accuracy", "message": "GPS location is outside the area. Now trying a more precise check..." })
                 else:
-                    return jsonify({ "success": False, "message": f"You are {distance:.0f}m away. Please move within the {GEOFENCE_RADIUS}m radius.", "category": "danger" }), 403
+                    return jsonify({ "success": False, "message": f"You are {distance:.0f}m away. Please move within the {geofence_radius}m radius.", "category": "danger" }), 403
             
             cur.execute("SELECT 1 FROM attendance_records WHERE session_id = %s AND ip_address = %s", (session_info['id'], user_ip))
             if cur.fetchone(): return jsonify({"success": False, "message": "This network has already been used.", "category": "danger"}), 403
@@ -267,7 +270,6 @@ def api_get_present_students(session_id):
     if not conn: return jsonify({"success": False, "students": []})
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
-            # FIXED: Query now returns a list of objects, not strings.
             cur.execute("SELECT s.name, s.enrollment_no FROM students s JOIN attendance_records ar ON s.id = ar.student_id WHERE ar.session_id = %s ORDER BY s.name ASC", (session_id,))
             students = [dict(row) for row in cur.fetchall()]
             return jsonify({"success": True, "students": students})
@@ -285,7 +287,9 @@ def api_start_session():
             class_id = get_class_id_by_name(cur)
             cur.execute("SELECT id FROM attendance_sessions WHERE class_id = %s AND is_active = TRUE AND end_time > NOW() AT TIME ZONE 'UTC'", (class_id,))
             if cur.fetchone(): return jsonify({"success": False, "message": "An active session already exists."}), 409
-            cur.execute("INSERT INTO attendance_sessions (class_id, controller_id, session_token, start_time, end_time, is_active, geofence_lat, geofence_lon, geofence_radius) VALUES (%s, %s, %s, NOW() AT TIME ZONE 'UTC', NOW() AT TIME ZONE 'UTC' + interval '5 minutes', TRUE, %s, %s, %s) RETURNING id, end_time", (class_id, session['user_id'], secrets.token_hex(16), data['latitude'], data['longitude'], GEOFENCE_RADIUS))
+            
+            # The geofence data is now stored in the classes table, not passed from the client
+            cur.execute("INSERT INTO attendance_sessions (class_id, controller_id, session_token, start_time, end_time, is_active) VALUES (%s, %s, %s, NOW() AT TIME ZONE 'UTC', NOW() AT TIME ZONE 'UTC' + interval '5 minutes', TRUE) RETURNING id, end_time", (class_id, session['user_id'], secrets.token_hex(16)))
             new_session = cur.fetchone()
             conn.commit()
             return jsonify({"success": True, "session": {'id': new_session['id'], 'end_time': new_session['end_time'].isoformat()}})
@@ -416,6 +420,7 @@ def api_delete_day(date_str):
             session_ids = [row[0] for row in cur.fetchall()]
             if session_ids:
                 cur.execute("DELETE FROM attendance_records WHERE session_id = ANY(%s)", (session_ids,))
+                cur.execute("DELETE FROM session_device_fingerprints WHERE session_id = ANY(%s)", (session_ids,))
                 cur.execute("DELETE FROM attendance_sessions WHERE id = ANY(%s)", (session_ids,))
             conn.commit()
             return jsonify({"success": True, "message": f"All records for {date_str} deleted."})
@@ -426,7 +431,6 @@ def api_delete_day(date_str):
         if conn: conn.close()
 
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
+    port = int(os.environ.get('PORT', 10000))
     debug = os.environ.get('FLASK_DEBUG', 'False').lower() in ['true', '1', 't']
     app.run(host='0.0.0.0', port=port, debug=debug)
-
