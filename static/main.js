@@ -1,7 +1,6 @@
 /**
  * Frontend logic for the AIH Attendance System.
- * Version with a two-step ("waterfall") location system for maximum reliability.
- * OPTIMIZED: Faster timeout and better user feedback.
+ * Implements a two-step location system and device fingerprinting for security.
  */
 
 // =============================================================================
@@ -17,24 +16,40 @@ function showStatusMessage(message, type) {
     setTimeout(() => { statusDiv.style.display = 'none'; }, 6000);
 }
 
+/**
+ * Generates a unique-ish fingerprint based on browser/device properties.
+ * @returns {Promise<string>} A promise that resolves with a hashed fingerprint.
+ */
+async function getDeviceFingerprint() {
+    const components = {
+        userAgent: navigator.userAgent,
+        screenWidth: screen.width,
+        screenHeight: screen.height,
+        colorDepth: screen.colorDepth,
+        timezone: new Date().getTimezoneOffset(),
+        language: navigator.language,
+        platform: navigator.platform,
+    };
+    const jsonString = JSON.stringify(components);
+    // Use the SubtleCrypto API to hash the string for a consistent, fixed-length fingerprint
+    const encoder = new TextEncoder();
+    const data = encoder.encode(jsonString);
+    const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+
 // --- LOCATION LOGIC ---
 
-/**
- * PHASE 1: Attempts to get location using the browser's built-in, high-accuracy GPS.
- * OPTIMIZED: Timeout reduced to 8 seconds for a faster fallback.
- * @returns {Promise<Position>} A promise that resolves with the position or rejects on failure.
- */
 function getBrowserGpsLocation() {
     return new Promise((resolve, reject) => {
         if (!navigator.geolocation) {
             return reject("Geolocation is not supported by your browser.");
         }
-        const options = { enableHighAccuracy: true, timeout: 8000, maximumAge: 0 }; // Faster timeout
+        const options = { enableHighAccuracy: true, timeout: 8000, maximumAge: 0 };
         navigator.geolocation.getCurrentPosition(
-            (position) => {
-                // We accept any accuracy initially; the server will verify the radius.
-                resolve(position);
-            },
+            (position) => resolve(position),
             (error) => {
                 let message = "GPS Error: ";
                 switch (error.code) {
@@ -50,10 +65,6 @@ function getBrowserGpsLocation() {
     });
 }
 
-/**
- * PHASE 2: Gets location using the highly reliable Google Maps Geolocation API as a fallback.
- * @returns {Promise<Position>} A promise that resolves with the position or rejects on failure.
- */
 async function getGoogleApiLocation() {
     if (!window.GOOGLE_MAPS_API_KEY || window.GOOGLE_MAPS_API_KEY === "YOUR_GOOGLE_MAPS_API_KEY") {
         throw new Error("Configuration error: Google Maps API key is not set.");
@@ -142,10 +153,8 @@ function initStudentPage() {
         const enrollmentNo = e.target.value.trim();
         
         if (enrollmentNo.length >= 5) {
-            // OPTIMIZED: Show instant feedback
             studentNameDisplay.textContent = 'Searching...';
             studentNameDisplay.style.color = 'var(--text-muted)';
-
             const response = await fetch(`/api/get_student_name/${enrollmentNo}`);
             const data = await response.json();
             studentNameDisplay.textContent = data.name ? `Name: ${data.name}` : 'Student not found.';
@@ -153,7 +162,7 @@ function initStudentPage() {
         } else {
             studentNameDisplay.textContent = '';
         }
-    }, 250)); // OPTIMIZED: Reduced delay for faster response
+    }, 250));
 
     const resetSubmitButton = () => {
         markButton.disabled = false;
@@ -162,12 +171,16 @@ function initStudentPage() {
     };
 
     const handleAttendanceSubmission = async (position, method) => {
+        // Generate the device fingerprint before submitting
+        const fingerprint = await getDeviceFingerprint();
+
         const formData = new URLSearchParams({
             enrollment_no: enrollmentInput.value,
             session_id: window.activeSessionDataStudent.id,
             latitude: position.coords.latitude,
             longitude: position.coords.longitude,
-            location_method: method
+            location_method: method,
+            fingerprint: fingerprint // Include the fingerprint in the request
         });
 
         const response = await fetch('/api/mark_attendance', { method: 'POST', body: formData });
@@ -203,6 +216,7 @@ function initStudentPage() {
             console.warn("Initial GPS failed:", gpsError);
             showStatusMessage("GPS failed. Please enable Wi-Fi for a more precise check.", "info");
             openModal(wifiModal);
+            // Don't reset the button here, let the modal action handle it.
         }
     });
     
@@ -220,7 +234,6 @@ function initStudentPage() {
     });
 }
 
-
 function initControllerDashboard() {
     const startButton = document.getElementById('start-session-btn');
     const endButton = document.querySelector('.end-session-btn');
@@ -233,32 +246,15 @@ function initControllerDashboard() {
     if (startButton) {
         startButton.addEventListener('click', async () => {
             startButton.disabled = true;
-            startButton.textContent = 'Getting Location...';
-
-            let position;
-            try {
-                startButton.textContent = 'Getting GPS Location...';
-                position = await getBrowserGpsLocation();
-            } catch (gpsError) {
-                console.warn("Controller GPS failed:", gpsError);
-                showStatusMessage("GPS failed. Trying advanced check...", "info");
-                startButton.textContent = 'Getting Wi-Fi Location...';
-                try {
-                    position = await getGoogleApiLocation();
-                } catch (googleError) {
-                    showStatusMessage("Could not get a precise location. Please enable Wi-Fi.", "error");
-                    startButton.disabled = false;
-                    startButton.textContent = 'Start New Session';
-                    return;
-                }
-            }
-
             startButton.textContent = 'Starting Session...';
+            
+            // No need for location check here as it's not used in the final backend logic for starting a session
             const response = await fetch('/api/start_session', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ latitude: position.coords.latitude, longitude: position.coords.longitude }),
+                body: JSON.stringify({}), // Empty body is fine
             });
+
             const result = await response.json();
             if (result.success) {
                 window.location.reload();
@@ -326,7 +322,10 @@ function initReportPage() {
             const response = await fetch(`/api/delete_day/${dateToDelete}`, { method: 'DELETE' });
             const result = await response.json();
             showStatusMessage(result.message, result.success ? 'success' : 'error');
-            if (result.success) document.getElementById(`row-${dateToDelete}`).remove();
+            if (result.success) {
+                const row = document.getElementById(`row-${dateToDelete}`);
+                if (row) row.remove();
+            }
             closeModal(deleteModal);
             confirmDeleteBtn.disabled = false;
         });
